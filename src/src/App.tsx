@@ -18,8 +18,8 @@ export default function App() {
     },
     {
       icon: Lock,
-      title: "Built with Clarity",
-      description: "Secure, transparent smart contracts on Stacks. Leverage Bitcoin's security for private transactions."
+      title: "Built on Stacks",
+      description: "Secure transactions. Leveraging Bitcoin's trust and security."
     },
     {
       icon: Network,
