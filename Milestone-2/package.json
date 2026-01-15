@@ -1,5 +1,9 @@
 {
   "dependencies": {
+    "@stacks/network": "^7.3.1",
+    "@stacks/transactions": "^7.3.1",
+    "circomlibjs": "^0.1.7",
+    "fixed-merkle-tree": "^0.7.3",
     "node-fetch": "^3.3.2",
     "snarkjs": "^0.7.5"
   }

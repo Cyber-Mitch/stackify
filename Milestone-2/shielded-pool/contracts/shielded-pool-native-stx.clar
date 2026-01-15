@@ -1,9 +1,5 @@
-;; Shielded Pool Contract - Off-Chain ZK Verification Model
-;; Relayer verifies zk-SNARK proofs off-chain, signs attestation
-;; Contract verifies relayer signature + nullifier/root checks
-
-(define-trait ft-trait
-  ((transfer (principal principal uint (optional (buff 34))) (response bool uint))))
+;; Shielded Pool - Native STX Version
+;; Uses SAME ZK circuits and relayer as token version
 
 ;; Error codes
 (define-constant ERR-INVALID-PROOF (err u100))
@@ -22,7 +18,7 @@
 (define-data-var relayer-pubkey (buff 33) 0x020000000000000000000000000000000000000000000000000000000000000001)
 (define-data-var contract-owner principal tx-sender)
 
-;; Recent roots for flexibility (allows withdrawals with slightly old roots)
+;; Recent roots
 (define-data-var recent-roots (list 100 (buff 32)) (list))
 
 ;; Maps
@@ -34,16 +30,12 @@
 (define-private (is-in-recent-roots (root (buff 32)))
   (is-some (index-of (var-get recent-roots) root)))
 
-;; Serialize uint to 8-byte big-endian buffer
 (define-private (uint-to-buff-8 (n uint))
   (unwrap-panic (to-consensus-buff? n)))
 
-;; Serialize principal to buffer
 (define-private (principal-to-buff (p principal))
   (unwrap-panic (to-consensus-buff? p)))
 
-;; Construct the message that relayer signs
-;; Must match exactly what relayer signs off-chain
 (define-private (construct-withdrawal-message
     (root (buff 32))
     (nullifier-hash (buff 32))
@@ -55,12 +47,11 @@
     (concat (principal-to-buff recipient)
             (uint-to-buff-8 fee))))))
 
-;; ========= Deposit =========
+;; ========= Deposit (Native STX) =========
 
 (define-public (deposit
     (commitment (buff 32))
-    (amount uint)
-    (token <ft-trait>))
+    (amount uint))
   (let 
     (
       (denom (var-get denomination))
@@ -78,15 +69,16 @@
       ;; Update pool balance
       (var-set pool-balance (+ (var-get pool-balance) amount))
 
-      ;; Transfer tokens from user to contract (using current-contract keyword)
-      (try! (contract-call? token transfer tx-sender current-contract amount none))
+      ;; Transfer native STX from user to contract
+      (try! (stx-transfer? amount tx-sender current-contract))
 
-      ;; Emit event for indexer to build Merkle tree
+      ;; Emit event for indexer
       (print {
         event: "deposit",
         commitment: commitment,
         amount: amount,
-        depositor: tx-sender
+        depositor: tx-sender,
+        pool: "stx"
       })
 
       (ok true)
@@ -94,32 +86,30 @@
   )
 )
 
-;; ========= Withdraw =========
+;; ========= Withdraw (Native STX) =========
 
 (define-public (withdraw
     (root (buff 32))
     (nullifier-hash (buff 32))
     (recipient principal)
     (fee uint)
-    (signature (buff 64))  ;; Clarity 4: 64-byte compact signature (r + s)
-    (token-trait <ft-trait>))
+    (signature (buff 64)))
   (let (
     (current-root (var-get merkle-root))
     (denom (var-get denomination))
     (payout (- denom fee))
-    ;; Construct message that relayer signed
     (message-hash (construct-withdrawal-message root nullifier-hash recipient fee)))
     
-    ;; 1. Validate merkle root (current or recent)
+    ;; Validate merkle root
     (asserts! (or (is-eq root current-root) (is-in-recent-roots root)) ERR-INVALID-ROOT)
     
-    ;; 2. Check for double-spend
+    ;; Check for double-spend
     (asserts! (is-none (map-get? nullifiers nullifier-hash)) ERR-DOUBLE-SPEND)
     
-    ;; 3. Check pool has sufficient balance
+    ;; Check pool balance
     (asserts! (>= (var-get pool-balance) denom) ERR-INSUFFICIENT-BALANCE)
     
-    ;; 4. Verify relayer's signature (relayer verified zk-proof off-chain)
+    ;; Verify relayer signature
     (asserts! (secp256r1-verify message-hash signature (var-get relayer-pubkey)) ERR-INVALID-SIGNATURE)
     
     ;; Mark nullifier as spent
@@ -128,56 +118,46 @@
     ;; Update pool balance
     (var-set pool-balance (- (var-get pool-balance) denom))
     
-    ;; Transfer funds to recipient (using as-contract? with proper allowance)
-    (try! 
-      (as-contract? ((with-ft (contract-of token-trait) "*" payout))
-        (unwrap-panic (contract-call? token-trait transfer current-contract recipient payout none))))
+    ;; Transfer native STX to recipient
+    (try! (as-contract? ((with-stx payout))
+      (unwrap-panic (stx-transfer? payout current-contract recipient))))
     
     ;; Emit event
     (print {
       event: "withdrawal",
       nullifier-hash: nullifier-hash,
       recipient: recipient,
-      fee: fee
+      fee: fee,
+      pool: "stx"
     })
     
     (ok true)))
 
 ;; ========= Admin Functions =========
 
-;; Update merkle root (called by indexer/relayer after new deposits)
 (define-public (update-merkle-root (new-root (buff 32)))
   (begin
-    ;; Only contract owner can update (add proper access control in production)
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)
-    
-    ;; Add current root to recent roots history
     (var-set recent-roots 
       (unwrap-panic (as-max-len? 
         (append (var-get recent-roots) (var-get merkle-root)) 
         u100)))
-    
-    ;; Set new root
     (var-set merkle-root new-root)
-    
     (print {event: "root-updated", new-root: new-root})
     (ok true)))
 
-;; Update relayer public key (governance/admin function)
 (define-public (set-relayer-pubkey (new-pubkey (buff 33)))
   (begin
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)
     (var-set relayer-pubkey new-pubkey)
     (ok true)))
 
-;; Update denomination (for different pool sizes)
 (define-public (set-denomination (new-denom uint))
   (begin
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)
     (var-set denomination new-denom)
     (ok true)))
 
-;; Transfer ownership
 (define-public (transfer-ownership (new-owner principal))
   (begin
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)

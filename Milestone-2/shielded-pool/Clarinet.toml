@@ -9,6 +9,17 @@ requirements = []
 path = 'contracts/shielded-pool.clar'
 clarity_version = 4
 epoch = 'latest'
+
+[contracts.shielded-pool-native-stx]
+path = "contracts/shielded-pool-native-stx.clar"
+clarity_version = 4
+epoch = 'latest'
+
+[contracts.mock-token]
+path = "contracts/mock-token.clar"
+clarity_version = 4
+epoch = 'latest'
+
 [repl.analysis]
 passes = [
     'check_checker',
