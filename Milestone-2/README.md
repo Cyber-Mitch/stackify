@@ -10,6 +10,12 @@ A zero-knowledge privacy protocol for STX and SIP-10 tokens on Stacks. Users dep
 - End-to-end tests successful (proof generation → relayer → transaction flow).  
 Ready for testnet deployment, audits, and scaling.
 
+**Recent Changes**:  
+- Unified relayer for both native STX and SIP-10 token pools (separate endpoints: /submit-withdraw-stx and /submit-withdraw).  
+- Added end-to-end local test script (test-end-to-end-local.js) for simulating full flow without testnet.  
+- Updated contract for production readiness (admin functions, message hashing for sig verify).  
+- Local testing with Clarinet JS SDK for assertions (expectOk, expectUint, etc.).  
+
 ## Milestone 2 Breakdown – What Was Built
 
 This milestone delivered a fully functional prototype of a zk-powered shielded pool, mirroring Tornado Cash's privacy model but adapted for Stacks' Clarity language and Bitcoin-anchored security.
@@ -23,7 +29,7 @@ This milestone delivered a fully functional prototype of a zk-powered shielded p
 
 Success criteria met: Local testing complete, proofs generated, relayer functional, internal report ready.
 
-## Tools & Techniques Used
+## Tools & Techniques Used (ZK Nerd Edition)
 
 This is a pure zk-SNARK project—privacy guaranteed by mathematical proofs, not trust.
 
@@ -33,13 +39,13 @@ This is a pure zk-SNARK project—privacy guaranteed by mathematical proofs, not
 - **Commitment Scheme**: Poseidon(nullifier || secret || denomination) – binding/hiding, collision-resistant.
 - **Nullifier Scheme**: Poseidon(nullifier) – prevents double-spends without linking to deposit.
 - **Off-Chain Verification**: snarkjs.groth16.verify in relayer (full pairing check off-chain) – avoids heavy on-chain Groth16 (Clarity lacks native pairings). On-chain: hash commitment + secp256r1 signature (Clarity 4 feature) for relayer attestation.
-- **Trusted Setup**: Multi-contribution Phase 2 (zkey contribute + beacon) with Hermez ptau (power 22 for headroom). No toxic waste risk.
+- **Trusted Setup**: Multi-contribution Phase 2 (zkey contribute + beacon) with Hermez ptau power 22 (`powersOfTau28_hez_final_22.ptau`). This supports circuits up to ~4 million constraints—plenty for current ~5k-10k constraint circuit with headroom for future growth (e.g., deeper trees or features).
 - **Relayer Tech**: Node.js + Bull queue (Redis) for async processing, elliptic for secp256r1 signing, @stacks/transactions for tx building.
 - **Testing**: Clarinet for local Stacks sim, snarkjs for proofs, custom JS for end-to-end.
 
 Why Poseidon over Pedersen? Pedersen is homomorphic (great for balances) but ~2x more constraints in Circom. Poseidon is faster/leaner for hashing in proofs – standard in modern mixers (Tornado Nova, Semaphore).
 
-**Verification Key**: `relayer/verification_key.json` is included in the repo. This is the public verification key exported from the trusted setup. It is safe to share and required for off-chain proof verification in the relayer. Anyone can use it to verify proofs generated from this circuit.
+**Verification Key**: `relayer/verification_key.json` is included in the repo. This is the public verification key exported from the trusted setup. It is completely safe to share and is required for off-chain proof verification in the relayer (or any verifier). Anyone can use it to independently verify proofs generated from this circuit – it contains no secrets and cannot be used to forge proofs.
 
 ## How the App Works – Full ZK Process Explained
 
@@ -82,8 +88,8 @@ Result: Deposit and withdrawal unlinkable (zk hides linkage), double-spend impos
 1. Install dependencies:
    - Node.js v18+ (for relayer/tests)
    - snarkjs (global: `npm i -g snarkjs`)
-   - Clarinet (for Clarity: `cargo install clarinet`)
-   - Redis (for queue: `brew install redis` or Docker)
+   - Clarinet (for Clarity: `curl -sSL https://get.clarinet.dev | bash`)
+   - Redis (for queue: `brew install redis` or Docker: `docker run -d -p 6379:6379 redis`)
 
 2. Circuits:
    - Compile: `cd circuits && circom shielded-withdraw.circom --r1cs --wasm --sym -l ../node_modules/circomlib/circuits`
@@ -97,18 +103,19 @@ Result: Deposit and withdrawal unlinkable (zk hides linkage), double-spend impos
 
 3. Relayer:
    - `cd relayer && npm install`
-   - Configure keys securely (use .env file)
+   - Configure keys in .env (RELAYER_EC_PRIV, RSA_PRIVATE_KEY, STACKS_PRIVATE_KEY)
    - Run: `node index.js` (starts on port 3000)
 
 4. Contracts:
-   - `clarinet integrate` (local simulation)
-   - Deploy to testnet: `clarinet deploy --testnet`
+   - `clarinet integrate` (local simulation—test deposit/withdraw mocks)
+   - Deploy to testnet: `clarinet deploy --testnet` (update relayer CONTRACT_ADDRESS)
 
-**Test End-to-End**:
-- Start Redis + relayer (`node relayer/index.js`)
-- Run `node tests/test-end-to-end.js` – generates proof, submits to relayer
+**Test End-to-End Locally**:
+- Start Redis: `redis-server &`
+- Start Relayer: `node relayer/index.js`
+- Run Test Script: `node tests/test-end-to-end.js` (generates proof, submits to relayer, logs tx)
 
 **Next Steps**: Testnet deploy, multi-relayer, audits. ZK privacy on Bitcoin L2 – let's build!
 
-# Questions? FeedBack? Bugs? Open an issue.
+Questions? Open an issue.
 ```
