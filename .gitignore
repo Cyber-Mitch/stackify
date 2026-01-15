@@ -6,6 +6,14 @@ powersOfTau*
 *.ptau
 
 
+# zk artifacts
+*.ptau
+*.zkey
+*.r1cs
+*.sym
+*.wasm
+powersOfTau*
+
 # Logs
 logs
 *.log
