@@ -3,7 +3,7 @@
 powersOfTau*
 
 *.ptau.1
-*.ptau
+*.ptau.*
 
 
 # zk artifacts
