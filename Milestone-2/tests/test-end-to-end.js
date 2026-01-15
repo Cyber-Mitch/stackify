@@ -1,18 +1,11 @@
 // test-end-to-end-local.js
 // Complete end-to-end test for both STX and Token pools
-// import { networkFromName } from '@stacks/network';
 
-// const mainnet = networkFromName('mainnet'); // Same as STACKS_MAINNET
-// const testnet = networkFromName('testnet'); // Same as STACKS_TESTNET
-// const devnet = networkFromName('devnet');   // Same as STACKS_DEVNET
-// const mocknet = networkFromName('mocknet'); // Same as STACKS_MOCKNET
-
-const mocknet = require('@stacks/network').networkFromName('mocknet');
 const snarkjs = require('snarkjs');
-const { poseidon } = require('circomlibjs');
+const circomlibjs = require('circomlibjs');
 const { MerkleTree } = require('fixed-merkle-tree');
 const crypto = require('crypto');
-// const fetch = require('node-fetch');
+const fetch = globalThis.fetch || require('node-fetch');
 
 const { 
   makeContractCall, 
@@ -23,22 +16,23 @@ const {
   AnchorMode
 } = require('@stacks/transactions');
 
+const { STACKS_DEVNET } = require('@stacks/network');
 
 // ============= CONFIGURATION =============
 
 const CONFIG = {
   relayerUrl: 'http://localhost:3000',
-  network:mocknet,
+  network: STACKS_DEVNET, // Use devnet constant
   
   // Update these after contract deployment
-  contractAddress: 'ST1PQHQKV0RJXZHJYZR0Z8G1R6NNX0STAM4SAZ6D3',
+  contractAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
   stxPoolContract: 'shielded-pool-native-stx',
   tokenPoolContract: 'shielded-pool',
   tokenContract: 'mock-token',
   
-  // Your Stacks wallet info
-  userPrivateKey: 'your-stacks-private-key',
-  userAddress: 'ST1PQHQKV0RJXZHJYZR0Z8G1R6NNX0STAM4SAZ6D3',
+  // Your Stacks wallet info (for local devnet)
+  userPrivateKey: 'your-private-key-hex',
+  userAddress: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
   
   // Circuit files
   wasmFile: './circuits/shielded-withdraw_js/shielded-withdraw.wasm',
@@ -47,7 +41,17 @@ const CONFIG = {
   denomination: 1000000 // 1 STX / 1 Token unit
 };
 
+// Global poseidon instance
+let poseidon;
+
 // ============= HELPER FUNCTIONS =============
+
+async function initPoseidon() {
+  if (!poseidon) {
+    poseidon = await circomlibjs.buildPoseidon();
+  }
+  return poseidon;
+}
 
 function generateDeposit() {
   const secret = crypto.randomBytes(31);
@@ -82,12 +86,22 @@ async function generateProof(deposit, tree, recipient, fee = 0) {
   
   const { pathElements, pathIndices } = tree.path(commitmentIndex);
   
+  // Convert recipient to BigInt (simplified - in production use proper principal encoding)
+  let recipientBigInt;
+  try {
+    // Try to extract numeric part if it's a principal
+    recipientBigInt = BigInt('0x' + Buffer.from(recipient).toString('hex').substring(0, 40));
+  } catch (e) {
+    // Fallback: use a hash of the recipient
+    recipientBigInt = BigInt('0x' + crypto.createHash('sha256').update(recipient).digest('hex').substring(0, 40));
+  }
+  
   // Prepare circuit inputs
   const input = {
     // Public
     root: tree.root(),
     nullifierHash: BigInt(deposit.nullifierHash),
-    recipient: BigInt(recipient.replace(/'/g, '').replace('ST', '0x')), // Simplified
+    recipient: recipientBigInt,
     fee: BigInt(fee),
     
     // Private
@@ -337,6 +351,11 @@ async function main() {
   console.log('║  SHIELDED POOL END-TO-END TEST            ║');
   console.log('║  Testing both STX and Token pools         ║');
   console.log('╚════════════════════════════════════════════╝');
+
+  // Initialize Poseidon
+  console.log('\n⚙️  Initializing Poseidon...');
+  await initPoseidon();
+  console.log('  ✅ Poseidon ready');
 
   // Check relayer is running
   console.log('\n🔍 Checking Relayer...');

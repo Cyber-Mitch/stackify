@@ -1,0 +1,32 @@
+---
+id: 0
+name: Devnet deployment
+network: devnet
+stacks-node: "http://localhost:20443"
+bitcoin-node: "http://devnet:devnet@localhost:18443"
+plan:
+  batches:
+    - id: 0
+      transactions:
+        - contract-publish:
+            contract-name: mock-token
+            expected-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            cost: 11750
+            path: contracts/mock-token.clar
+            anchor-block-only: true
+            clarity-version: 4
+        - contract-publish:
+            contract-name: shielded-pool
+            expected-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            cost: 67600
+            path: contracts/shielded-pool.clar
+            anchor-block-only: true
+            clarity-version: 4
+        - contract-publish:
+            contract-name: shielded-pool-native-stx
+            expected-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            cost: 56180
+            path: contracts/shielded-pool-native-stx.clar
+            anchor-block-only: true
+            clarity-version: 4
+      epoch: "3.3"
