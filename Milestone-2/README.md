@@ -104,11 +104,11 @@ Result: Deposit and withdrawal unlinkable (zk hides linkage), double-spend impos
 3. Relayer:
    - `cd relayer && npm install`
    - Configure keys in .env (RELAYER_EC_PRIV, RSA_PRIVATE_KEY, STACKS_PRIVATE_KEY)
-   - Run: `node index.js` (starts on port 3000)
+   - Run: `node Relayer.js` (starts on port 3000)
 
 4. Contracts:
-   - `clarinet integrate` (local simulation—test deposit/withdraw mocks)
-   - Deploy to testnet: `clarinet deploy --testnet` (update relayer CONTRACT_ADDRESS)
+   - `clarinet devnet start` (local simulation—test deposit/withdraw mocks)
+   
 
 **Test End-to-End Locally**:
 - Start Redis: `redis-server &`
