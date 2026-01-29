@@ -1,0 +1,39 @@
+[project]
+name = 'ShieldedPools'
+description = 'Privacy mixer contracts for Stacks blockchain'
+authors = []
+telemetry = true
+cache_dir = './.cache'
+requirements = []
+[contracts.shielded-native-pool]
+path = 'contracts/shielded-native-pool.clar'
+clarity_version = 4
+epoch = 'latest'
+
+[contracts.shielded-token-pool]
+path = 'contracts/shielded-token-pool.clar'
+clarity_version = 4
+epoch = 'latest'
+
+[contracts.mock-token]
+path = 'contracts/mock-token.clar'
+clarity_version = 4
+epoch = 'latest'
+
+[repl.analysis]
+passes = [
+    'call_checker',
+    'check_checker',
+]
+
+[repl.analysis.lints]
+
+[repl.analysis.check_checker]
+strict = false
+trusted_sender = false
+trusted_caller = false
+callee_filter = false
+
+[repl.remote_data]
+enabled = false
+api_url = 'https://api.hiro.so'
