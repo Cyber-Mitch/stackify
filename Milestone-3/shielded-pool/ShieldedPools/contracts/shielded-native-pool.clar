@@ -379,10 +379,18 @@
       (base-fee (calculate-fee DENOMINATION))
       ;; Total fee = base fee + any additional tip
       (total-fee (+ base-fee fee))
-      ;; Payout = denomination - total fee
+      
+    )
+      ;; Check fee BEFORE calculating payout
+      (asserts! (< total-fee DENOMINATION) ERR-INVALID-FEE)
+      
+  (let    
+    (
+      ;; Now safe to calculate payout
       (payout (- DENOMINATION total-fee))
       ;; Construct the message that should have been signed by relayer
       (message-hash (construct-withdrawal-message root nullifier-hash recipient total-fee))
+
     )
     (begin
       ;; === VALIDATION CHECKS ===
@@ -396,8 +404,7 @@
       ;; Check nullifier hasn't been used (prevents double-withdrawal)
       (asserts! (is-none (map-get? nullifiers nullifier-hash)) ERR-DOUBLE-SPEND)
       
-      ;; Check fee is less than denomination (can't withdraw negative)
-      (asserts! (< total-fee DENOMINATION) ERR-INVALID-FEE)
+      
       
       ;; Check contract has enough balance
       (asserts! (>= (stx-get-balance current-contract) DENOMINATION) ERR-INSUFFICIENT-BALANCE)
@@ -443,7 +450,7 @@
         timestamp: stacks-block-time 
       })
       
-      (ok true))))
+      (ok true)))))
 
 ;; =============================================================================
 ;; ADMIN FUNCTIONS

@@ -24,8 +24,12 @@ export default defineConfig({
     // use vitest-environment-clarinet
     environment: "clarinet",
     pool: "forks",
-    // clarinet handles test isolation by resetting the simnet between tests
-    isolate: false,
+    poolOptions: {
+  forks: {
+    singleFork: true,
+  },
+},
+isolate: false,
     maxWorkers: 1,
     setupFiles: [
       vitestSetupFilePath,

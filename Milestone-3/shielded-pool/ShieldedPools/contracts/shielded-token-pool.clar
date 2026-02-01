@@ -259,12 +259,24 @@
     (signature (buff 64))
     (token <ft-trait>))
   (let 
-    (
+    ( 
       (base-fee (calculate-fee DENOMINATION))
+
       (total-fee (+ base-fee fee))
+    )
+    
+    ;; Check fee Before calculating payout
+    (asserts! (< total-fee DENOMINATION) ERR-INVALID-FEE)
+
+  (let
+    (
+      ;;Now safe to calculate payout
       (payout (- DENOMINATION total-fee))
+      ;;Contruct withdrawal message that should have been signed by relayer
       (message-hash (construct-withdrawal-message root nullifier-hash recipient total-fee))
+
       (token-principal (contract-of token))
+
       (current-balance (default-to u0 (map-get? token-balances token-principal)))
     )
     (begin
@@ -304,7 +316,7 @@
         timestamp: stacks-block-time 
       })
       
-      (ok true))))
+      (ok true)))))
 
 ;; =============================================================================
 ;; ADMIN FUNCTIONS
