@@ -3,7 +3,9 @@
  * SHIELDED POOL RELAYER v2.1 - Multi-Relayer Ready
  * ============================================================================
  * 
- * Open API for Developer Testing (Milestone 3)
+ * This is a reference implementation of a shielded pool relayer for the Stacks blockchain, designed to work with the Tornado Cash-like privacy pools. 
+ * It provides an API for computing deposit commitments, indexing new deposits, and submitting withdrawal transactions with ZK proof verification.
+ *  This version includes support for both STX and fungible token pools, as well as multi-relayer capabilities and enhanced security features.
  * 
  * Features:
  * - ZK proof verification (Groth16 via snarkjs)
@@ -14,9 +16,10 @@
  * - CORS enabled for developer access
  * - Swagger/OpenAPI documentation endpoint
  * 
- * API Base URL: https://your-relayer.example.com
  * ============================================================================
  */
+
+require('dotenv').config();
 
 const snarkjs = require('snarkjs');
 const { 
@@ -26,7 +29,7 @@ const {
   TransactionVersion
 } = require('@stacks/transactions');
 const { STACKS_TESTNET, STACKS_MAINNET } = require('@stacks/network');
-const { generateWallet, getStxAddress, generateSecretKey } = require('@stacks/wallet-sdk');
+const { generateWallet } = require('@stacks/wallet-sdk');
 const express = require('express');
 const Queue = require('bull');
 const crypto = require('crypto');
@@ -54,10 +57,6 @@ const CONFIG = {
   CONTRACT_NAME_STX: process.env.CONTRACT_NAME_STX || 'shielded-native-pool',
   CONTRACT_NAME_TOKEN: process.env.CONTRACT_NAME_TOKEN || 'shielded-token-pool',
   
-  //WALLET
-  SEEDPHRASE: seedPhrase = process.env.STACKS_MNEMONIC,
-  WALLET_SECRET_KEY: generateSecretKey(seedPhrase),
-
   // Redis
   REDIS_URL: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
   
@@ -235,22 +234,24 @@ async function initStacksWallet() {
   }
   
   try {
+    // Generate wallet from seed phrase
     const wallet = await generateWallet({
       secretKey: mnemonic,
       password: '',
     });
     
+    // Get the first account
     const account = wallet.accounts[0];
+    
+    // Get the STX private key
     stacksPrivateKey = account.stxPrivateKey;
     
+    // Get the address from private key
     const transactionVersion = CONFIG.NETWORK === 'mainnet' 
       ? TransactionVersion.Mainnet 
       : TransactionVersion.Testnet;
     
-    stacksAddress = getStxAddress({
-      account,
-      transactionVersion,
-    });
+    stacksAddress = getAddressFromPrivateKey(stacksPrivateKey, transactionVersion);
     
     console.log(`✓ Stacks wallet initialized: ${stacksAddress}`);
   } catch (err) {
