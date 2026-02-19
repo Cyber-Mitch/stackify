@@ -24,8 +24,7 @@ const snarkjs = require('snarkjs');
 const { 
   makeContractCall, broadcastTransaction, AnchorMode,
   bufferCV, uintCV, principalCV, serializeCV,
-  getAddressFromPrivateKey,
-  TransactionVersion
+  getAddressFromPrivateKey
 } = require('@stacks/transactions');
 const { STACKS_TESTNET, STACKS_MAINNET } = require('@stacks/network');
 const { generateWallet } = require('@stacks/wallet-sdk');
@@ -245,12 +244,9 @@ async function initStacksWallet() {
     // Get the STX private key
     stacksPrivateKey = account.stxPrivateKey;
     
-    // Get the address from private key
-    const transactionVersion = CONFIG.NETWORK === 'mainnet' 
-      ? TransactionVersion.Mainnet 
-      : TransactionVersion.Testnet;
-    
-    stacksAddress = getAddressFromPrivateKey(stacksPrivateKey, transactionVersion);
+    // Get the address from private key using network string
+    // In v7.x, use 'testnet' or 'mainnet' string
+    stacksAddress = getAddressFromPrivateKey(stacksPrivateKey, CONFIG.NETWORK);
     
     console.log(`✓ Stacks wallet initialized: ${stacksAddress}`);
   } catch (err) {
@@ -650,7 +646,7 @@ async function processWithdrawal(job) {
     bufferCV(rootBuffer),
     bufferCV(nullifierBuffer),
     principalCV(recipient),
-    uintCV(totalFee),
+    uintCV(BigInt(totalFee)),
     bufferCV(signatureBuffer)
   ];
   if (poolType === 'token') args.push(principalCV(tokenContract));
@@ -660,21 +656,26 @@ async function processWithdrawal(job) {
   console.log(`    Sender: ${stacksAddress}`);
   
   try {
-    const tx = await makeContractCall({
+    // v7.x API - use 'testnet' string instead of STACKS_TESTNET object for some functions
+    const networkName = CONFIG.NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
+    
+    const txOptions = {
       contractAddress: CONFIG.CONTRACT_ADDRESS,
       contractName,
       functionName: 'withdraw',
       functionArgs: args,
       senderKey: stacksPrivateKey,
-      network: STACKS_TESTNET,
-      anchorMode: AnchorMode.Any,
+      network: networkName,
       fee: 2000
-    });
+    };
+    
+    console.log('  Creating contract call...');
+    const tx = await makeContractCall(txOptions);
     console.log('  ✓ Transaction built');
 
     // 9. Broadcast
     console.log('  Broadcasting transaction...');
-    const result = await broadcastTransaction(tx, STACKS_TESTNET);
+    const result = await broadcastTransaction(tx, networkName);
     
     if (result.error) {
       throw new Error(`Broadcast failed: ${result.error} - ${result.reason}`);
@@ -685,6 +686,7 @@ async function processWithdrawal(job) {
     
   } catch (txError) {
     console.error('  Transaction error:', txError.message);
+    console.error('  Stack:', txError.stack);
     throw txError;
   }
 }

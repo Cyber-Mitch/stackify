@@ -1,71 +1,40 @@
 /**
  * ============================================================================
- * SHIELDED POOL RELAYER v2.1 - Multi-Relayer Ready
+ * SHIELDED POOL - Local Test Script
  * ============================================================================
  * 
- * Open API for Developer Testing (Milestone 3)
+ * Simulates the full Tornado Cash-style flow:
+ * 1. Generate commitment (nullifier + secret)
+ * 2. Deposit to pool
+ * 3. Wait for relayer to index
+ * 4. Generate ZK proof
+ * 5. Withdraw to different address
  * 
- * Features:
- * - ZK proof verification (Groth16 via snarkjs)
- * - Incremental Merkle tree (20 levels, matches Tornado Cash)
- * - Multi-relayer support
- * - Same-address prevention
- * - Rate limiting
- * - CORS enabled for developer access
- * - Swagger/OpenAPI documentation endpoint
- * 
- * API Base URL: https://your-relayer.example.com
+ * Usage:
+ *   node test-local.js deposit    - Make a deposit
+ *   node test-local.js withdraw   - Withdraw using saved note
+ *   node test-local.js full       - Full flow test
  * ============================================================================
  */
 
-require('dotenv').config();
-
 const snarkjs = require('snarkjs');
-const { 
-  makeContractCall, broadcastTransaction, AnchorMode,
-  bufferCV, uintCV, principalCV, serializeCV,
-  getAddressFromPrivateKey
-} = require('@stacks/transactions');
-const { STACKS_TESTNET, STACKS_MAINNET } = require('@stacks/network');
-const { generateWallet } = require('@stacks/wallet-sdk');
-const express = require('express');
-const Queue = require('bull');
 const crypto = require('crypto');
-const elliptic = require('elliptic');
-const rateLimit = require('express-rate-limit');
-const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
 
 // ============= CONFIGURATION =============
 
 const CONFIG = {
-  // Merkle tree (matches Tornado Cash)
-  MERKLE_TREE_LEVELS: 20,
-  ROOT_HISTORY_SIZE: 30,
+  RELAYER_URL: 'http://localhost:3000',
+  DENOMINATION: 1000000,  // 1 STX in microSTX
   
-  // Fees
-  BASE_FEE_BPS: 50,  // 0.5%
-  FEE_DENOMINATOR: 10000,
-  DENOMINATION: 1000000,  // 1 STX
+  // Paths to ZK files
+  WASM_PATH: path.join(__dirname, 'shielded-withdraw.wasm'),
+  ZKEY_PATH: path.join(__dirname, 'shielded-withdraw_final.zkey'),
   
-  // Network
-  NETWORK: process.env.STACKS_NETWORK || 'testnet',
-  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || 'ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N',
-  CONTRACT_NAME_STX: process.env.CONTRACT_NAME_STX || 'shielded-native-pool',
-  CONTRACT_NAME_TOKEN: process.env.CONTRACT_NAME_TOKEN || 'shielded-token-pool',
-  
-  // Redis
-  REDIS_URL: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
-  
-  // Server
-  PORT: process.env.PORT || 3000,
-  RELAYER_ID: process.env.RELAYER_ID || 'relayer-primary',
-  
-  // API Settings
-  API_VERSION: 'v1',
-  RATE_LIMIT_WINDOW_MS: 60000,  // 1 minute
-  RATE_LIMIT_MAX: 30,  // requests per window
+  // File to save deposit notes
+  NOTES_FILE: path.join(__dirname, 'deposit-notes.json'),
 };
 
 // ============= POSEIDON HASH =============
@@ -76,666 +45,388 @@ async function initPoseidon() {
   const { buildPoseidon } = await import('circomlibjs');
   poseidon = await buildPoseidon();
   F = poseidon.F;
-  console.log('✓ Poseidon hash initialized');
+  console.log('✓ Poseidon initialized');
 }
 
 function poseidonHash(inputs) {
   return F.toString(poseidon(inputs.map(x => F.e(x))));
 }
 
-// ============= INCREMENTAL MERKLE TREE =============
+// ============= NOTE MANAGEMENT =============
 
-class IncrementalMerkleTree {
-  constructor(levels = CONFIG.MERKLE_TREE_LEVELS) {
-    this.levels = levels;
-    this.capacity = 2 ** levels;
-    this.zeros = [];
-    this.filledSubtrees = [];
-    this.roots = new Array(CONFIG.ROOT_HISTORY_SIZE).fill(null);
-    this.currentRootIndex = 0;
-    this.nextIndex = 0;
-    this.leaves = [];
-    this.leafToIndex = new Map();
+function saveNote(note) {
+  let notes = [];
+  if (fs.existsSync(CONFIG.NOTES_FILE)) {
+    notes = JSON.parse(fs.readFileSync(CONFIG.NOTES_FILE, 'utf8'));
   }
+  notes.push({ ...note, timestamp: Date.now(), used: false });
+  fs.writeFileSync(CONFIG.NOTES_FILE, JSON.stringify(notes, null, 2));
+  console.log(`\n📝 Note saved to ${CONFIG.NOTES_FILE}`);
+}
 
-  async initialize() {
-    this.zeros = new Array(this.levels + 1);
-    this.zeros[0] = BigInt(0);
-    for (let i = 1; i <= this.levels; i++) {
-      this.zeros[i] = BigInt(poseidonHash([this.zeros[i-1], this.zeros[i-1]]));
-    }
-    this.filledSubtrees = this.zeros.slice(0, this.levels);
-    this.roots[0] = this.zeros[this.levels];
-    console.log(`✓ Merkle tree: ${this.levels} levels, ${this.capacity.toLocaleString()} capacity`);
-    return this;
+function loadNotes() {
+  if (!fs.existsSync(CONFIG.NOTES_FILE)) {
+    return [];
   }
+  return JSON.parse(fs.readFileSync(CONFIG.NOTES_FILE, 'utf8'));
+}
 
-  insert(commitment) {
-    if (this.nextIndex >= this.capacity) throw new Error('Tree full');
-    
-    let currentIndex = this.nextIndex;
-    let currentHash = BigInt(commitment);
+function getUnusedNote() {
+  const notes = loadNotes();
+  return notes.find(n => !n.used);
+}
 
-    for (let i = 0; i < this.levels; i++) {
-      if (currentIndex % 2 === 0) {
-        this.filledSubtrees[i] = currentHash;
-        currentHash = BigInt(poseidonHash([currentHash, this.zeros[i]]));
-      } else {
-        currentHash = BigInt(poseidonHash([this.filledSubtrees[i], currentHash]));
-      }
-      currentIndex = Math.floor(currentIndex / 2);
-    }
-
-    const newRootIndex = (this.currentRootIndex + 1) % CONFIG.ROOT_HISTORY_SIZE;
-    this.roots[newRootIndex] = currentHash;
-    this.currentRootIndex = newRootIndex;
-    
-    this.leaves.push(BigInt(commitment));
-    this.leafToIndex.set(commitment.toString(), this.nextIndex);
-    
-    return { root: currentHash, index: this.nextIndex++ };
-  }
-
-  isKnownRoot(root) {
-    const r = BigInt(root);
-    return r !== BigInt(0) && this.roots.some(x => x === r);
-  }
-
-  getRoot() { return this.roots[this.currentRootIndex]; }
-
-  getPath(leafIndex) {
-    if (leafIndex >= this.nextIndex) throw new Error('Leaf not found');
-    
-    const pathElements = [];
-    const pathIndices = [];
-    
-    // Rebuild the tree level by level to get correct siblings
-    let currentLevel = [];
-    
-    // Start with all leaves (pad with zeros)
-    for (let i = 0; i < this.capacity; i++) {
-      if (i < this.leaves.length) {
-        currentLevel.push(this.leaves[i]);
-      } else {
-        currentLevel.push(this.zeros[0]);
-      }
-    }
-    
-    let idx = leafIndex;
-    
-    for (let level = 0; level < this.levels; level++) {
-      // Get sibling
-      const siblingIdx = idx % 2 === 0 ? idx + 1 : idx - 1;
-      pathElements.push(currentLevel[siblingIdx]);
-      pathIndices.push(idx % 2);
-      
-      // Compute next level
-      const nextLevel = [];
-      for (let i = 0; i < currentLevel.length; i += 2) {
-        const left = currentLevel[i];
-        const right = currentLevel[i + 1];
-        nextLevel.push(BigInt(poseidonHash([left, right])));
-      }
-      currentLevel = nextLevel;
-      idx = Math.floor(idx / 2);
-    }
-    
-    // The final currentLevel[0] is the computed root
-    const computedRoot = currentLevel[0];
-    
-    return { pathElements, pathIndices, computedRoot };
-  }
-
-  exportState() {
-    return {
-      leaves: this.leaves.map(l => l.toString()),
-      nextIndex: this.nextIndex,
-      currentRootIndex: this.currentRootIndex,
-      roots: this.roots.map(r => r?.toString() || null),
-      filledSubtrees: this.filledSubtrees.map(s => s.toString())
-    };
-  }
-
-  async importState(state) {
-    this.leaves = state.leaves.map(l => BigInt(l));
-    this.nextIndex = state.nextIndex;
-    this.currentRootIndex = state.currentRootIndex;
-    this.roots = state.roots.map(r => r ? BigInt(r) : null);
-    this.filledSubtrees = state.filledSubtrees.map(s => BigInt(s));
-    this.leaves.forEach((l, i) => this.leafToIndex.set(l.toString(), i));
+function markNoteUsed(nullifier) {
+  const notes = loadNotes();
+  const note = notes.find(n => n.nullifier === nullifier);
+  if (note) {
+    note.used = true;
+    note.withdrawnAt = Date.now();
+    fs.writeFileSync(CONFIG.NOTES_FILE, JSON.stringify(notes, null, 2));
   }
 }
 
-// ============= RELAYER SETUP =============
+// ============= DEPOSIT FLOW =============
 
-const ec = new elliptic.ec('p256');
-let relayerKeyPair, relayerPubKey;
-
-function initRelayerKeys() {
-  const privateKey = process.env.RELAYER_SECP256R1_KEY || crypto.randomBytes(32).toString('hex');
-  relayerKeyPair = ec.keyFromPrivate(privateKey);
-  relayerPubKey = Buffer.from(relayerKeyPair.getPublic(true, 'hex'), 'hex');
-  console.log(`✓ Relayer pubkey: ${relayerPubKey.toString('hex')}`);
+async function generateCommitment() {
+  // Generate random nullifier and secret (31 bytes each to fit in field)
+  const nullifier = crypto.randomBytes(31).toString('hex');
+  const secret = crypto.randomBytes(31).toString('hex');
+  
+  const nullifierBigInt = BigInt('0x' + nullifier);
+  const secretBigInt = BigInt('0x' + secret);
+  const denomination = BigInt(CONFIG.DENOMINATION);
+  
+  // Compute commitment = Poseidon(nullifier, secret, denomination)
+  const commitment = poseidonHash([nullifierBigInt, secretBigInt, denomination]);
+  
+  // Compute nullifierHash = Poseidon(nullifier) - used to prevent double-spend
+  const nullifierHash = poseidonHash([nullifierBigInt]);
+  
+  return {
+    nullifier,
+    secret,
+    denomination: CONFIG.DENOMINATION.toString(),
+    commitment: BigInt(commitment).toString(),
+    commitmentHex: '0x' + BigInt(commitment).toString(16).padStart(64, '0'),
+    nullifierHash: BigInt(nullifierHash).toString(),
+    nullifierHashHex: '0x' + BigInt(nullifierHash).toString(16).padStart(64, '0'),
+  };
 }
 
-const network = () => CONFIG.NETWORK === 'mainnet' ? STACKS_MAINNET : STACKS_TESTNET;
+async function deposit() {
+  console.log('\n' + '='.repeat(60));
+  console.log('  DEPOSIT FLOW');
+  console.log('='.repeat(60));
+  
+  // 1. Generate commitment
+  console.log('\n1️⃣  Generating commitment...');
+  const note = await generateCommitment();
+  
+  console.log('\n📋 Deposit Note (SAVE THIS!):');
+  console.log('─'.repeat(40));
+  console.log(`  Nullifier:      ${note.nullifier.slice(0, 20)}...`);
+  console.log(`  Secret:         ${note.secret.slice(0, 20)}...`);
+  console.log(`  Commitment:     ${note.commitmentHex.slice(0, 20)}...`);
+  console.log(`  NullifierHash:  ${note.nullifierHashHex.slice(0, 20)}...`);
+  console.log(`  Denomination:   ${note.denomination} microSTX`);
+  console.log('─'.repeat(40));
+  
+  // 2. Index deposit with relayer (simulates on-chain deposit event)
+  console.log('\n2️⃣  Indexing deposit with relayer...');
+  
+  try {
+    const response = await axios.post(`${CONFIG.RELAYER_URL}/merkle/index`, {
+      commitment: note.commitment,
+      depositor: 'ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N',  // Simulated depositor
+      pool: 'stx'
+    });
+    
+    console.log(`  ✓ Indexed at leaf: ${response.data.leafIndex}`);
+    console.log(`  ✓ New root: ${response.data.rootHex.slice(0, 20)}...`);
+    
+    // Save note with leaf index
+    note.leafIndex = response.data.leafIndex;
+    note.root = response.data.root;
+    note.rootHex = response.data.rootHex;
+    saveNote(note);
+    
+    console.log('\n✅ DEPOSIT COMPLETE!');
+    console.log('\n📌 Next steps:');
+    console.log('   1. In production: Call contract deposit() with commitment');
+    console.log('   2. In production: Relayer will index from blockchain events');
+    console.log('   3. Run: node test-local.js withdraw');
+    
+    return note;
+    
+  } catch (err) {
+    console.error('❌ Error:', err.response?.data || err.message);
+    throw err;
+  }
+}
 
-// Stacks wallet from mnemonic
-let stacksPrivateKey = null;
-let stacksAddress = null;
+// ============= WITHDRAW FLOW =============
 
-async function initStacksWallet() {
-  const mnemonic = process.env.STACKS_MNEMONIC;
-  if (!mnemonic) {
-    console.warn('⚠ STACKS_MNEMONIC not set - transaction broadcasting disabled');
+async function generateProof(note, recipient) {
+  console.log('\n3️⃣  Generating ZK proof...');
+  
+  // Get Merkle path from relayer
+  const pathResponse = await axios.get(
+    `${CONFIG.RELAYER_URL}/merkle/stx/path/${note.leafIndex}`
+  );
+  
+  const { pathElements, pathIndices } = pathResponse.data;
+  const root = pathResponse.data.root;
+  
+  console.log(`  ✓ Got Merkle path for leaf ${note.leafIndex}`);
+  console.log(`  ✓ pathElements count: ${pathElements.length}`);
+  console.log(`  ✓ pathIndices count: ${pathIndices.length}`);
+  
+  // Prepare circuit inputs
+  const nullifierBigInt = BigInt('0x' + note.nullifier);
+  const secretBigInt = BigInt('0x' + note.secret);
+  
+  // Convert recipient address to field element (simplified - hash it)
+  const recipientHash = BigInt('0x' + crypto.createHash('sha256')
+    .update(recipient)
+    .digest('hex')
+    .slice(0, 62));
+  
+  const fee = 5000;  // 0.5% base fee
+  const refund = 0;  // No refund
+  
+  // Compute recipientCommitment = Poseidon(nullifier, recipient)
+  // This binds the recipient to the proof for same-address prevention
+  const recipientCommitment = poseidonHash([nullifierBigInt, recipientHash]);
+  
+  // Ensure we have exactly 20 path elements and indices
+  const pathElementsPadded = pathElements.map(e => e.toString());
+  const pathIndicesPadded = pathIndices.map(i => i.toString());
+  
+  while (pathElementsPadded.length < 20) {
+    pathElementsPadded.push('0');
+  }
+  while (pathIndicesPadded.length < 20) {
+    pathIndicesPadded.push('0');
+  }
+  
+  const input = {
+    // Public inputs (8 total)
+    root: root,
+    nullifierHash: note.nullifierHash,
+    recipient: recipientHash.toString(),
+    relayer: recipientHash.toString(),  // Same as recipient for self-relay
+    fee: fee.toString(),
+    refund: refund.toString(),
+    denomination: CONFIG.DENOMINATION.toString(),
+    recipientCommitment: recipientCommitment.toString(),
+    
+    // Private inputs (42 total: nullifier + secret + 20 pathElements + 20 pathIndices)
+    nullifier: nullifierBigInt.toString(),
+    secret: secretBigInt.toString(),
+    pathElements: pathElementsPadded,
+    pathIndices: pathIndicesPadded,
+  };
+  
+  // Debug: count inputs
+  const inputCount = 8 + 2 + pathElementsPadded.length + pathIndicesPadded.length;
+  console.log(`  ✓ Total inputs: ${inputCount}`);
+  console.log('  ✓ Circuit inputs prepared');
+  
+  // Check if WASM and ZKEY exist
+  if (!fs.existsSync(CONFIG.WASM_PATH)) {
+    throw new Error(`WASM file not found: ${CONFIG.WASM_PATH}`);
+  }
+  if (!fs.existsSync(CONFIG.ZKEY_PATH)) {
+    throw new Error(`ZKEY file not found: ${CONFIG.ZKEY_PATH}`);
+  }
+  
+  // Generate the proof
+  console.log('  ⏳ Generating proof (this may take a moment)...');
+  
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+    input,
+    CONFIG.WASM_PATH,
+    CONFIG.ZKEY_PATH
+  );
+  
+  console.log('  ✓ Proof generated!');
+  
+  return { proof, publicSignals, root, fee };
+}
+
+async function withdraw(recipientAddress) {
+  console.log('\n' + '='.repeat(60));
+  console.log('  WITHDRAW FLOW');
+  console.log('='.repeat(60));
+  
+  // 1. Load unused note
+  console.log('\n1️⃣  Loading deposit note...');
+  const note = getUnusedNote();
+  
+  if (!note) {
+    console.log('❌ No unused deposit notes found!');
+    console.log('   Run: node test-local.js deposit');
     return;
   }
   
+  console.log(`  ✓ Found note with commitment: ${note.commitmentHex.slice(0, 20)}...`);
+  console.log(`  ✓ Leaf index: ${note.leafIndex}`);
+  
+  // 2. Set recipient
+  const recipient = recipientAddress || 'ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5';
+  console.log(`\n2️⃣  Recipient: ${recipient}`);
+  
   try {
-    // Generate wallet from seed phrase
-    const wallet = await generateWallet({
-      secretKey: mnemonic,
-      password: '',
+    // 3. Generate ZK proof
+    const { proof, publicSignals, root, fee } = await generateProof(note, recipient);
+    
+    // 4. Submit to relayer
+    console.log('\n4️⃣  Submitting withdrawal to relayer...');
+    
+    const response = await axios.post(`${CONFIG.RELAYER_URL}/withdraw/stx`, {
+      proof,
+      publicSignals,
+      recipient,
+      fee: 0  // No additional tip
     });
     
-    // Get the first account
-    const account = wallet.accounts[0];
+    console.log(`  ✓ Job queued: ${response.data.jobId}`);
     
-    // Get the STX private key
-    stacksPrivateKey = account.stxPrivateKey;
+    // 5. Poll for result
+    console.log('\n5️⃣  Waiting for transaction...');
     
-    // Get the address from private key using network string
-    // In v7.x, use 'testnet' or 'mainnet' string
-    stacksAddress = getAddressFromPrivateKey(stacksPrivateKey, CONFIG.NETWORK);
+    let attempts = 0;
+    const maxAttempts = 30;
     
-    console.log(`✓ Stacks wallet initialized: ${stacksAddress}`);
-  } catch (err) {
-    console.error('❌ Failed to initialize Stacks wallet:', err.message);
-  }
-}
-
-// ============= EXPRESS APP =============
-
-const app = express();
-app.use(express.json({ limit: '2mb' }));
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: CONFIG.RATE_LIMIT_WINDOW_MS,
-  max: CONFIG.RATE_LIMIT_MAX,
-  message: { error: 'Rate limit exceeded', retryAfter: '60s' }
-});
-
-// Verification key
-let VK;
-function loadVerificationKey() {
-  const vkPath = process.env.VK_PATH || path.join(__dirname, 'verification_key.json');
-  if (fs.existsSync(vkPath)) {
-    VK = JSON.parse(fs.readFileSync(vkPath, 'utf8'));
-    console.log('✓ Verification key loaded');
-  } else {
-    console.warn('⚠ Verification key not found at', vkPath);
-  }
-}
-
-// Queue
-let withdrawQueue;
-
-// Merkle trees
-const merkleTreeSTX = new IncrementalMerkleTree();
-const merkleTreeToken = new IncrementalMerkleTree();
-
-// Depositor tracking
-const depositorHashes = new Set();
-
-// ============= HELPERS =============
-
-function calculateFee() {
-  return Math.floor((CONFIG.DENOMINATION * CONFIG.BASE_FEE_BPS) / CONFIG.FEE_DENOMINATOR);
-}
-
-function constructMessage(root, nullifierHash, recipient, fee) {
-  const rootBuf = Buffer.from(root.replace('0x', ''), 'hex');
-  const nullBuf = Buffer.from(nullifierHash.replace('0x', ''), 'hex');
-  
-  // In v7.x, serializeCV returns Uint8Array
-  const recipSerialized = serializeCV(principalCV(recipient));
-  const feeSerialized = serializeCV(uintCV(fee));
-  
-  const recipBuf = Buffer.from(recipSerialized);
-  const feeBuf = Buffer.from(feeSerialized);
-  
-  return crypto.createHash('sha256').update(Buffer.concat([rootBuf, nullBuf, recipBuf, feeBuf])).digest();
-}
-
-// ============= API ROUTES =============
-
-// OpenAPI Documentation
-app.get('/', (req, res) => {
-  res.json({
-    name: 'Shielded Pool Relayer API',
-    version: CONFIG.API_VERSION,
-    description: 'Privacy mixer relayer for Stacks blockchain',
-    documentation: '/docs',
-    endpoints: {
-      health: 'GET /health',
-      deposit: 'POST /deposit/compute-commitment',
-      merkle: 'GET /merkle/:pool',
-      merklePath: 'GET /merkle/:pool/path/:index',
-      indexDeposit: 'POST /merkle/index',
-      withdrawSTX: 'POST /withdraw/stx',
-      withdrawToken: 'POST /withdraw/token',
-      jobStatus: 'GET /job/:id',
-      stats: 'GET /stats',
-      zeros: 'GET /zeros'
-    }
-  });
-});
-
-// API Documentation
-app.get('/docs', (req, res) => {
-  res.json({
-    openapi: '3.0.0',
-    info: {
-      title: 'Shielded Pool Relayer API',
-      version: '2.1.0',
-      description: 'Open API for developer testing - Milestone 3'
-    },
-    servers: [{ url: `http://localhost:${CONFIG.PORT}` }],
-    paths: {
-      '/health': {
-        get: { summary: 'Health check', responses: { 200: { description: 'Relayer status' } } }
-      },
-      '/deposit/compute-commitment': {
-        post: {
-          summary: 'Compute deposit commitment (NO ZK PROOF NEEDED)',
-          requestBody: {
-            content: { 'application/json': { schema: {
-              type: 'object',
-              properties: {
-                nullifier: { type: 'string', description: '31-byte hex random value' },
-                secret: { type: 'string', description: '31-byte hex random value' }
-              }
-            }}}
-          },
-          responses: { 200: { description: 'Commitment and nullifierHash' } }
-        }
-      },
-      '/withdraw/stx': {
-        post: {
-          summary: 'Submit STX withdrawal',
-          requestBody: {
-            content: { 'application/json': { schema: {
-              type: 'object',
-              required: ['proof', 'publicSignals', 'recipient'],
-              properties: {
-                proof: { type: 'object' },
-                publicSignals: { type: 'array', items: { type: 'string' } },
-                recipient: { type: 'string', description: 'Stacks address' },
-                fee: { type: 'number', description: 'Optional tip' }
-              }
-            }}}
-          }
-        }
+    while (attempts < maxAttempts) {
+      await new Promise(r => setTimeout(r, 2000));
+      
+      const jobStatus = await axios.get(
+        `${CONFIG.RELAYER_URL}/job/${response.data.jobId}`
+      );
+      
+      const state = jobStatus.data.state;
+      process.stdout.write(`\r  ⏳ Status: ${state} (attempt ${++attempts}/${maxAttempts})`);
+      
+      if (state === 'completed') {
+        console.log('\n\n✅ WITHDRAWAL COMPLETE!');
+        console.log(`  TX: ${jobStatus.data.result.txid}`);
+        console.log(`  Recipient: ${jobStatus.data.result.recipient}`);
+        console.log(`  Fee: ${jobStatus.data.result.fee} microSTX`);
+        
+        markNoteUsed(note.nullifier);
+        return jobStatus.data.result;
+      }
+      
+      if (state === 'failed') {
+        console.log('\n\n❌ WITHDRAWAL FAILED!');
+        console.log(`  Error: ${jobStatus.data.error}`);
+        return null;
       }
     }
-  });
-});
-
-// Health check
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    relayerId: CONFIG.RELAYER_ID,
-    network: CONFIG.NETWORK,
-    pubkey: relayerPubKey.toString('hex'),
-    contracts: {
-      stx: `${CONFIG.CONTRACT_ADDRESS}.${CONFIG.CONTRACT_NAME_STX}`,
-      token: `${CONFIG.CONTRACT_ADDRESS}.${CONFIG.CONTRACT_NAME_TOKEN}`
-    },
-    pools: {
-      stx: { deposits: merkleTreeSTX.nextIndex, root: merkleTreeSTX.getRoot()?.toString(16).slice(0, 16) + '...' },
-      token: { deposits: merkleTreeToken.nextIndex, root: merkleTreeToken.getRoot()?.toString(16).slice(0, 16) + '...' }
-    },
-    fee: { bps: CONFIG.BASE_FEE_BPS, amount: calculateFee(), denomination: CONFIG.DENOMINATION },
-    limits: { rateLimit: `${CONFIG.RATE_LIMIT_MAX} req/${CONFIG.RATE_LIMIT_WINDOW_MS/1000}s` }
-  });
-});
-
-// Compute commitment (for deposits - NO ZK PROOF)
-app.post('/deposit/compute-commitment', async (req, res) => {
-  try {
-    let { nullifier, secret } = req.body;
     
-    // Generate random if not provided
-    if (!nullifier) nullifier = crypto.randomBytes(31).toString('hex');
-    if (!secret) secret = crypto.randomBytes(31).toString('hex');
+    console.log('\n\n⚠️  Timeout waiting for transaction');
     
-    const nullifierBigInt = BigInt('0x' + nullifier);
-    const secretBigInt = BigInt('0x' + secret);
-    const denomination = BigInt(CONFIG.DENOMINATION);
-    
-    const commitment = poseidonHash([nullifierBigInt, secretBigInt, denomination]);
-    const nullifierHash = poseidonHash([nullifierBigInt]);
-    
-    res.json({
-      success: true,
-      note: 'SAVE THESE VALUES SECURELY - needed for withdrawal',
-      data: {
-        nullifier,
-        secret,
-        denomination: CONFIG.DENOMINATION.toString(),
-        commitment: BigInt(commitment).toString(16).padStart(64, '0'),
-        commitmentDecimal: commitment,
-        nullifierHash: BigInt(nullifierHash).toString(16).padStart(64, '0'),
-        nullifierHashDecimal: nullifierHash
-      },
-      nextStep: `Call contract deposit with commitment: 0x${BigInt(commitment).toString(16).padStart(64, '0')}`
-    });
   } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Get Merkle tree info
-app.get('/merkle/:pool', (req, res) => {
-  const tree = req.params.pool === 'stx' ? merkleTreeSTX : merkleTreeToken;
-  res.json({
-    pool: req.params.pool,
-    root: tree.getRoot()?.toString(),
-    rootHex: '0x' + (tree.getRoot()?.toString(16).padStart(64, '0') || '0'.repeat(64)),
-    nextIndex: tree.nextIndex,
-    capacity: tree.capacity,
-    levels: CONFIG.MERKLE_TREE_LEVELS
-  });
-});
-
-// Get Merkle path
-app.get('/merkle/:pool/path/:index', (req, res) => {
-  try {
-    const tree = req.params.pool === 'stx' ? merkleTreeSTX : merkleTreeToken;
-    const { pathElements, pathIndices, computedRoot } = tree.getPath(parseInt(req.params.index));
-    res.json({
-      root: computedRoot.toString(),
-      rootHex: '0x' + computedRoot.toString(16).padStart(64, '0'),
-      pathElements: pathElements.map(e => e.toString()),
-      pathIndices,
-      leafIndex: parseInt(req.params.index)
-    });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Index deposit
-app.post('/merkle/index', async (req, res) => {
-  try {
-    const { commitment, depositor, pool = 'stx' } = req.body;
-    if (!commitment || !depositor) {
-      return res.status(400).json({ error: 'Missing commitment or depositor' });
-    }
-    
-    const tree = pool === 'stx' ? merkleTreeSTX : merkleTreeToken;
-    const { root, index } = tree.insert(BigInt(commitment));
-    
-    // Track depositor
-    const depHash = crypto.createHash('sha256').update(depositor).digest('hex');
-    depositorHashes.add(depHash);
-    
-    res.json({
-      success: true,
-      pool,
-      leafIndex: index,
-      root: root.toString(),
-      rootHex: '0x' + root.toString(16).padStart(64, '0'),
-      message: 'Now call update-merkle-root on contract with this root'
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Get zeros (for verification)
-app.get('/zeros', (req, res) => {
-  res.json({
-    levels: CONFIG.MERKLE_TREE_LEVELS,
-    zeros: merkleTreeSTX.zeros.map((z, i) => ({
-      level: i,
-      value: z.toString(),
-      hex: '0x' + z.toString(16).padStart(64, '0')
-    }))
-  });
-});
-
-// Submit STX withdrawal
-app.post('/withdraw/stx', limiter, async (req, res) => {
-  try {
-    const { proof, publicSignals, recipient, fee = 0 } = req.body;
-    
-    if (!proof || !publicSignals || !recipient) {
-      return res.status(400).json({ error: 'Missing: proof, publicSignals, or recipient' });
-    }
-    
-    if (!recipient.startsWith('ST') && !recipient.startsWith('SP')) {
-      return res.status(400).json({ error: 'Invalid Stacks address' });
-    }
-
-    const job = await withdrawQueue.add({
-      proof, publicSignals, recipient, userFee: fee, poolType: 'stx'
-    }, { attempts: 3, backoff: { type: 'exponential', delay: 5000 } });
-
-    res.json({ success: true, jobId: job.id, status: 'queued', checkStatus: `/job/${job.id}` });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Submit Token withdrawal
-app.post('/withdraw/token', limiter, async (req, res) => {
-  try {
-    const { proof, publicSignals, recipient, fee = 0, tokenContract } = req.body;
-    
-    if (!proof || !publicSignals || !recipient || !tokenContract) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    const job = await withdrawQueue.add({
-      proof, publicSignals, recipient, userFee: fee, poolType: 'token', tokenContract
-    }, { attempts: 3, backoff: { type: 'exponential', delay: 5000 } });
-
-    res.json({ success: true, jobId: job.id, status: 'queued' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Job status
-app.get('/job/:id', async (req, res) => {
-  try {
-    const job = await withdrawQueue.getJob(req.params.id);
-    if (!job) return res.status(404).json({ error: 'Job not found' });
-    
-    const state = await job.getState();
-    res.json({
-      id: job.id,
-      state,
-      result: job.returnvalue,
-      error: job.failedReason,
-      attempts: job.attemptsMade,
-      createdAt: job.timestamp
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Stats
-app.get('/stats', async (req, res) => {
-  const counts = await withdrawQueue.getJobCounts();
-  res.json({
-    queue: counts,
-    pools: {
-      stx: { deposits: merkleTreeSTX.nextIndex },
-      token: { deposits: merkleTreeToken.nextIndex }
-    },
-    depositorCount: depositorHashes.size
-  });
-});
-
-// ============= WITHDRAWAL PROCESSOR =============
-
-async function processWithdrawal(job) {
-  const { proof, publicSignals, recipient, userFee, poolType, tokenContract } = job.data;
-  console.log(`\n📤 Processing ${poolType} withdrawal (Job ${job.id})`);
-
-  // 1. Verify ZK proof
-  if (!VK) throw new Error('Verification key not loaded');
-  const valid = await snarkjs.groth16.verify(VK, publicSignals, proof);
-  if (!valid) throw new Error('Invalid ZK proof');
-  console.log('  ✓ Proof valid');
-
-  // 2. Extract signals (8 public signals)
-  // [root, nullifierHash, recipient, relayer, fee, refund, denomination, recipientCommitment]
-  if (!publicSignals || publicSignals.length < 8) {
-    throw new Error(`Invalid publicSignals: expected 8, got ${publicSignals?.length || 0}`);
-  }
-  const root = publicSignals[0];
-  const nullifierHash = publicSignals[1];
-  const rootHex = BigInt(root).toString(16).padStart(64, '0');
-  const nullifierHex = BigInt(nullifierHash).toString(16).padStart(64, '0');
-
-  // 3. Verify root
-  const tree = poolType === 'stx' ? merkleTreeSTX : merkleTreeToken;
-  if (!tree.isKnownRoot(root)) throw new Error('Unknown root');
-  console.log('  ✓ Root valid');
-
-  // 4. Check same-address
-  const recipHash = crypto.createHash('sha256').update(recipient).digest('hex');
-  if (depositorHashes.has(recipHash)) throw new Error('Same-address withdrawal blocked');
-  console.log('  ✓ Recipient OK');
-
-  // 5. Calculate fee
-  const baseFee = calculateFee();
-  const totalFee = baseFee + (userFee || 0);
-  console.log(`  Fee: ${totalFee} (base: ${baseFee}, tip: ${userFee || 0})`);
-
-  // 6. Sign
-  const msgHash = constructMessage(rootHex, nullifierHex, recipient, totalFee);
-  const sig = relayerKeyPair.sign(msgHash);
-  const signature = Buffer.concat([
-    sig.r.toArrayLike(Buffer, 'be', 32),
-    sig.s.toArrayLike(Buffer, 'be', 32)
-  ]);
-  console.log('  ✓ Signed');
-
-  // 7. Check for private key
-  if (!stacksPrivateKey) {
-    throw new Error('Stacks wallet not initialized - set STACKS_MNEMONIC environment variable');
-  }
-
-  // 8. Build TX
-  const contractName = poolType === 'stx' ? CONFIG.CONTRACT_NAME_STX : CONFIG.CONTRACT_NAME_TOKEN;
-  
-  // Convert to Uint8Array for v7.x compatibility
-  const rootBuffer = new Uint8Array(Buffer.from(rootHex, 'hex'));
-  const nullifierBuffer = new Uint8Array(Buffer.from(nullifierHex, 'hex'));
-  const signatureBuffer = new Uint8Array(signature);
-  
-  const args = [
-    bufferCV(rootBuffer),
-    bufferCV(nullifierBuffer),
-    principalCV(recipient),
-    uintCV(BigInt(totalFee)),
-    bufferCV(signatureBuffer)
-  ];
-  if (poolType === 'token') args.push(principalCV(tokenContract));
-
-  console.log('  Building transaction...');
-  console.log(`    Contract: ${CONFIG.CONTRACT_ADDRESS}.${contractName}`);
-  console.log(`    Sender: ${stacksAddress}`);
-  
-  try {
-    // v7.x API - use 'testnet' string instead of STACKS_TESTNET object for some functions
-    const networkName = CONFIG.NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
-    
-    const txOptions = {
-      contractAddress: CONFIG.CONTRACT_ADDRESS,
-      contractName,
-      functionName: 'withdraw',
-      functionArgs: args,
-      senderKey: stacksPrivateKey,
-      network: networkName,
-      fee: 2000
-    };
-    
-    console.log('  Creating contract call...');
-    const tx = await makeContractCall(txOptions);
-    console.log('  ✓ Transaction built');
-
-    // 9. Broadcast
-    console.log('  Broadcasting transaction...');
-    const result = await broadcastTransaction(tx, networkName);
-    
-    if (result.error) {
-      throw new Error(`Broadcast failed: ${result.error} - ${result.reason}`);
-    }
-    
-    console.log(`  ✅ TX: ${result.txid}`);
-    return { txid: result.txid, recipient, fee: totalFee, pool: poolType };
-    
-  } catch (txError) {
-    console.error('  Transaction error:', txError.message);
-    console.error('  Stack:', txError.stack);
-    throw txError;
+    console.error('\n❌ Error:', err.response?.data || err.message);
+    throw err;
   }
 }
 
-// ============= STARTUP =============
+// ============= FULL TEST FLOW =============
 
-async function main() {
+async function fullTest() {
   console.log('\n' + '='.repeat(60));
-  console.log('  SHIELDED POOL RELAYER v2.1');
+  console.log('  FULL TEST FLOW (Deposit → Withdraw)');
   console.log('='.repeat(60));
   
-  await initPoseidon();
-  initRelayerKeys();
-  loadVerificationKey();
-  await initStacksWallet();
+  // Check relayer is running
+  try {
+    const health = await axios.get(`${CONFIG.RELAYER_URL}/health`);
+    console.log('\n✓ Relayer is running');
+    console.log(`  Network: ${health.data.network}`);
+    console.log(`  Pubkey: ${health.data.pubkey.slice(0, 20)}...`);
+  } catch (err) {
+    console.log('\n❌ Relayer not running!');
+    console.log('   Start it with: node relayer.js');
+    return;
+  }
   
-  await merkleTreeSTX.initialize();
-  await merkleTreeToken.initialize();
+  // Step 1: Deposit
+  const note = await deposit();
   
-  // Initialize queue
-  withdrawQueue = new Queue('shielded-withdrawals', CONFIG.REDIS_URL);
-  withdrawQueue.process(processWithdrawal);
-  withdrawQueue.on('completed', (job, result) => console.log(`✅ Job ${job.id} complete: ${result.txid}`));
-  withdrawQueue.on('failed', (job, err) => console.error(`❌ Job ${job.id} failed: ${err.message}`));
+  // Step 2: Wait a moment
+  console.log('\n⏳ Waiting 3 seconds before withdrawal...');
+  await new Promise(r => setTimeout(r, 3000));
   
-  app.listen(CONFIG.PORT, () => {
-    console.log('\n' + '='.repeat(60));
-    console.log(`  🚀 API Server: http://localhost:${CONFIG.PORT}`);
-    console.log(`  📡 Network: ${CONFIG.NETWORK}`);
-    console.log(`  🔑 Pubkey: ${relayerPubKey.toString('hex')}`);
-    console.log(`  💰 Fee: ${CONFIG.BASE_FEE_BPS} bps`);
-    console.log('='.repeat(60));
-    console.log('\n📋 API Endpoints:');
-    console.log('  GET  /              - API info');
-    console.log('  GET  /docs          - OpenAPI docs');
-    console.log('  GET  /health        - Health check');
-    console.log('  POST /deposit/compute-commitment - Compute commitment');
-    console.log('  GET  /merkle/:pool  - Tree info');
-    console.log('  GET  /merkle/:pool/path/:idx - Merkle path');
-    console.log('  POST /merkle/index  - Index deposit');
-    console.log('  POST /withdraw/stx  - Submit withdrawal');
-    console.log('  GET  /job/:id       - Job status');
-    console.log('  GET  /stats         - Statistics');
-    console.log('  GET  /zeros         - Precomputed zeros');
-    console.log('\n');
-  });
+  // Step 3: Withdraw to different address
+  const recipient = 'ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5';
+  await withdraw(recipient);
 }
 
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+// ============= CLI =============
+
+async function main() {
+  await initPoseidon();
+  
+  const command = process.argv[2] || 'help';
+  const arg = process.argv[3];
+  
+  switch (command) {
+    case 'deposit':
+      await deposit();
+      break;
+      
+    case 'withdraw':
+      await withdraw(arg);
+      break;
+      
+    case 'full':
+      await fullTest();
+      break;
+      
+    case 'notes':
+      const notes = loadNotes();
+      console.log('\n📋 Saved Notes:');
+      notes.forEach((n, i) => {
+        console.log(`\n[${i}] ${n.used ? '✓ USED' : '○ UNUSED'}`);
+        console.log(`    Commitment: ${n.commitmentHex.slice(0, 30)}...`);
+        console.log(`    Leaf Index: ${n.leafIndex}`);
+        console.log(`    Created: ${new Date(n.timestamp).toLocaleString()}`);
+      });
+      break;
+      
+    case 'status':
+      try {
+        const health = await axios.get(`${CONFIG.RELAYER_URL}/health`);
+        console.log('\n✅ Relayer Status:');
+        console.log(JSON.stringify(health.data, null, 2));
+      } catch (err) {
+        console.log('\n❌ Relayer not running');
+      }
+      break;
+      
+    default:
+      console.log(`
+Shielded Pool - Local Test Script
+
+Usage:
+  node test-local.js <command> [options]
+
+Commands:
+  deposit              Generate commitment and index deposit
+  withdraw [address]   Withdraw to address (or default)
+  full                 Run full deposit → withdraw test
+  notes                List saved deposit notes
+  status               Check relayer status
+
+Examples:
+  node test-local.js deposit
+  node test-local.js withdraw ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5
+  node test-local.js full
+      `);
+  }
+}
+
+main().catch(console.error);
