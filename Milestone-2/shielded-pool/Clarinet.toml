@@ -15,8 +15,8 @@ path = "contracts/shielded-pool-native-stx.clar"
 clarity_version = 4
 epoch = 'latest'
 
-[contracts.mock-token]
-path = "contracts/mock-token.clar"
+[contracts.mock-token1]
+path = "contracts/mock-token1.clar"
 clarity_version = 4
 epoch = 'latest'
 

@@ -1,5 +1,5 @@
 ;; Mock SIP-10 Token for Testing
-;; contracts/mock-token.clar
+;; contracts/mock-token1.clar
 
 (define-fungible-token test-token)
 

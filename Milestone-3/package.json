@@ -1,0 +1,23 @@
+{
+  "name": "milestone-3",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@stacks/network": "^7.3.1",
+    "@stacks/transactions": "^7.3.1",
+    "bull": "^4.16.5",
+    "circomlibjs": "^0.1.7",
+    "cors": "^2.8.6",
+    "elliptic": "^6.6.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
+    "snarkjs": "^0.7.6"
+  }
+}

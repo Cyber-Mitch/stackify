@@ -452,7 +452,7 @@ describe("Shielded Token Pool Contract (SIP-10 Tokens)", () => {
       
       // Mint tokens for testing
       simnet.callPublicFn(
-        'mock-token',
+        'mock-token3',
         'mint',
         [Cl.uint(10000000), Cl.principal(deployer)],
         deployer
@@ -463,7 +463,7 @@ describe("Shielded Token Pool Contract (SIP-10 Tokens)", () => {
       const { result } = simnet.callPublicFn(
         'shielded-token-pool',
         'deposit',
-        [commitment, Cl.contractPrincipal(deployer, 'mock-token')],
+        [commitment, Cl.contractPrincipal(deployer, 'mock-token3')],
         deployer
       );
 
@@ -483,7 +483,7 @@ describe("Shielded Token Pool Contract (SIP-10 Tokens)", () => {
     it("should reject duplicate commitments", () => {
       const deployer = simnet.getAccounts().get('deployer')!;
       
-      simnet.callPublicFn('mock-token', 'mint', [Cl.uint(10000000), Cl.principal(deployer)], deployer);
+      simnet.callPublicFn('mock-token3', 'mint', [Cl.uint(10000000), Cl.principal(deployer)], deployer);
       
       const commitment = Cl.bufferFromHex('1111111111111111111111111111111111111111111111111111111111111112');
 
@@ -491,7 +491,7 @@ describe("Shielded Token Pool Contract (SIP-10 Tokens)", () => {
       simnet.callPublicFn(
         'shielded-token-pool',
         'deposit',
-        [commitment, Cl.contractPrincipal(deployer, 'mock-token')],
+        [commitment, Cl.contractPrincipal(deployer, 'mock-token3')],
         deployer
       );
 
@@ -499,7 +499,7 @@ describe("Shielded Token Pool Contract (SIP-10 Tokens)", () => {
       const { result } = simnet.callPublicFn(
         'shielded-token-pool',
         'deposit',
-        [commitment, Cl.contractPrincipal(deployer, 'mock-token')],
+        [commitment, Cl.contractPrincipal(deployer, 'mock-token3')],
         deployer
       );
 
@@ -509,14 +509,14 @@ describe("Shielded Token Pool Contract (SIP-10 Tokens)", () => {
     it("should reject zero commitment", () => {
       const deployer = simnet.getAccounts().get('deployer')!;
       
-      simnet.callPublicFn('mock-token', 'mint', [Cl.uint(10000000), Cl.principal(deployer)], deployer);
+      simnet.callPublicFn('mock-token3', 'mint', [Cl.uint(10000000), Cl.principal(deployer)], deployer);
 
       const zeroCommitment = Cl.bufferFromHex('0000000000000000000000000000000000000000000000000000000000000000');
 
       const { result } = simnet.callPublicFn(
         'shielded-token-pool',
         'deposit',
-        [zeroCommitment, Cl.contractPrincipal(deployer, 'mock-token')],
+        [zeroCommitment, Cl.contractPrincipal(deployer, 'mock-token3')],
         deployer
       );
 
@@ -526,21 +526,21 @@ describe("Shielded Token Pool Contract (SIP-10 Tokens)", () => {
     it("should track token balance correctly", () => {
       const deployer = simnet.getAccounts().get('deployer')!;
       
-      simnet.callPublicFn('mock-token', 'mint', [Cl.uint(10000000), Cl.principal(deployer)], deployer);
+      simnet.callPublicFn('mock-token3', 'mint', [Cl.uint(10000000), Cl.principal(deployer)], deployer);
 
       const commitment = Cl.bufferFromHex('2222222222222222222222222222222222222222222222222222222222222223');
 
       simnet.callPublicFn(
         'shielded-token-pool',
         'deposit',
-        [commitment, Cl.contractPrincipal(deployer, 'mock-token')],
+        [commitment, Cl.contractPrincipal(deployer, 'mock-token3')],
         deployer
       );
 
       const tokenBalance = simnet.callReadOnlyFn(
         'shielded-token-pool',
         'get-token-balance',
-        [Cl.contractPrincipal(deployer, 'mock-token')],
+        [Cl.contractPrincipal(deployer, 'mock-token3')],
         deployer
       );
 
@@ -569,7 +569,7 @@ describe("Shielded Token Pool Contract (SIP-10 Tokens)", () => {
           Cl.principal(user),
           Cl.uint(0),
           signature,
-          Cl.contractPrincipal(deployer, 'mock-token')
+          Cl.contractPrincipal(deployer, 'mock-token3')
         ],
         deployer
       );
@@ -600,7 +600,7 @@ describe("Shielded Token Pool Contract (SIP-10 Tokens)", () => {
           Cl.principal(user),
           Cl.uint(0),
           signature,
-          Cl.contractPrincipal(deployer, 'mock-token')
+          Cl.contractPrincipal(deployer, 'mock-token3')
         ],
         deployer
       );
@@ -756,7 +756,7 @@ describe("Cross-Pool Comparison Tests", () => {
     const sameCommitment = Cl.bufferFromHex('ababababababababababababababababababababababababababababababab01');
 
     // Setup token
-    simnet.callPublicFn('mock-token', 'mint', [Cl.uint(10000000), Cl.principal(deployer)], deployer);
+    simnet.callPublicFn('mock-token3', 'mint', [Cl.uint(10000000), Cl.principal(deployer)], deployer);
 
     // Deposit same commitment to both pools
     const stxResult = simnet.callPublicFn(
@@ -770,7 +770,7 @@ describe("Cross-Pool Comparison Tests", () => {
     const tokenResult = simnet.callPublicFn(
       'shielded-token-pool',
       'deposit',
-      [sameCommitment, Cl.contractPrincipal(deployer, 'mock-token')],
+      [sameCommitment, Cl.contractPrincipal(deployer, 'mock-token3')],
       deployer
     );
     expect(tokenResult.result).toBeOk(Cl.uint(0));

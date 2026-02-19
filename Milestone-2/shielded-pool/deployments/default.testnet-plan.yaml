@@ -1,0 +1,32 @@
+---
+id: 0
+name: Testnet deployment
+network: testnet
+stacks-node: "https://api.testnet.hiro.so"
+bitcoin-node: "http://blockstack:blockstacksystem@bitcoind.testnet.stacks.co:18332"
+plan:
+  batches:
+    - id: 0
+      transactions:
+        - contract-publish:
+            contract-name: mock-token1
+            expected-sender: ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N
+            cost: 11760
+            path: contracts/mock-token1.clar
+            anchor-block-only: true
+            clarity-version: 4
+        - contract-publish:
+            contract-name: shielded-pool
+            expected-sender: ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N
+            cost: 67600
+            path: contracts/shielded-pool.clar
+            anchor-block-only: true
+            clarity-version: 4
+        - contract-publish:
+            contract-name: shielded-pool-native-stx
+            expected-sender: ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N
+            cost: 56180
+            path: contracts/shielded-pool-native-stx.clar
+            anchor-block-only: true
+            clarity-version: 4
+      epoch: "3.3"

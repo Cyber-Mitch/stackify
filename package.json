@@ -30,6 +30,7 @@
             "@radix-ui/react-toggle": "^1.1.2",
             "@radix-ui/react-toggle-group": "^1.1.2",
             "@radix-ui/react-tooltip": "^1.1.8",
+            "@stacks/clarinet-sdk": "^3.13.1",
             "@stacks/network": "^7.3.1",
             "@stacks/transactions": "^7.3.1",
             "@tailwindcss/vite": "*",
