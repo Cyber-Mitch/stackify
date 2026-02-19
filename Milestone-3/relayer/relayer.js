@@ -23,7 +23,7 @@ require('dotenv').config();
 const snarkjs = require('snarkjs');
 const { 
   makeContractCall, broadcastTransaction, AnchorMode,
-  bufferCV, uintCV, principalCV, serializeCV,
+  bufferCV, uintCV, principalCV,
   getAddressFromPrivateKey
 } = require('@stacks/transactions');
 const { STACKS_TESTNET, STACKS_MAINNET } = require('@stacks/network');
@@ -246,8 +246,9 @@ async function initStacksWallet() {
     
     // Get the address from private key using network string
     // In v7.x, use 'testnet' or 'mainnet' string
-    stacksAddress = getAddressFromPrivateKey(stacksPrivateKey, CONFIG.NETWORK);
-    
+   const transactionVersion = CONFIG.NETWORK === 'mainnet' ? 0x00 : 0x80; // TransactionVersion
+    stacksAddress = getAddressFromPrivateKey(stacksPrivateKey, transactionVersion);
+
     console.log(`✓ Stacks wallet initialized: ${stacksAddress}`);
   } catch (err) {
     console.error('❌ Failed to initialize Stacks wallet:', err.message);
@@ -299,12 +300,11 @@ function constructMessage(root, nullifierHash, recipient, fee) {
   const rootBuf = Buffer.from(root.replace('0x', ''), 'hex');
   const nullBuf = Buffer.from(nullifierHash.replace('0x', ''), 'hex');
   
-  // In v7.x, serializeCV returns Uint8Array
-  const recipSerialized = serializeCV(principalCV(recipient));
-  const feeSerialized = serializeCV(uintCV(fee));
-  
-  const recipBuf = Buffer.from(recipSerialized);
-  const feeBuf = Buffer.from(feeSerialized);
+  // Manual serialization to avoid v7.x serializeCV issues
+  // Just hash the recipient string and fee as bytes
+  const recipBuf = Buffer.from(recipient, 'utf8');
+  const feeBuf = Buffer.alloc(8);
+  feeBuf.writeBigUInt64BE(BigInt(fee));
   
   return crypto.createHash('sha256').update(Buffer.concat([rootBuf, nullBuf, recipBuf, feeBuf])).digest();
 }
@@ -657,32 +657,33 @@ async function processWithdrawal(job) {
   
   try {
     // v7.x API - use 'testnet' string instead of STACKS_TESTNET object for some functions
-    const networkName = CONFIG.NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
-    
+    const networkObj = CONFIG.NETWORK === 'mainnet' ? STACKS_MAINNET : STACKS_TESTNET;
+
     const txOptions = {
       contractAddress: CONFIG.CONTRACT_ADDRESS,
       contractName,
       functionName: 'withdraw',
       functionArgs: args,
       senderKey: stacksPrivateKey,
-      network: networkName,
-      fee: 2000
+      network: networkObj,
+      anchorMode: AnchorMode.Any,
+      fee: 2000n,  // BigInt for v7.x
     };
-    
+
     console.log('  Creating contract call...');
     const tx = await makeContractCall(txOptions);
     console.log('  ✓ Transaction built');
 
-    // 9. Broadcast
     console.log('  Broadcasting transaction...');
-    const result = await broadcastTransaction(tx, networkName);
+    const result = await broadcastTransaction(tx, networkObj);
     
     if (result.error) {
       throw new Error(`Broadcast failed: ${result.error} - ${result.reason}`);
     }
     
-    console.log(`  ✅ TX: ${result.txid}`);
-    return { txid: result.txid, recipient, fee: totalFee, pool: poolType };
+    const txid = typeof result === 'string' ? result : result.txid;
+    console.log(`  ✅ TX: ${txid}`);
+    return { txid, recipient, fee: totalFee, pool: poolType };
     
   } catch (txError) {
     console.error('  Transaction error:', txError.message);
