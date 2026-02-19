@@ -3,9 +3,7 @@
  * SHIELDED POOL RELAYER v2.1 - Multi-Relayer Ready
  * ============================================================================
  * 
- * This is a reference implementation of a shielded pool relayer for the Stacks blockchain, designed to work with the Tornado Cash-like privacy pools. 
- * It provides an API for computing deposit commitments, indexing new deposits, and submitting withdrawal transactions with ZK proof verification.
- *  This version includes support for both STX and fungible token pools, as well as multi-relayer capabilities and enhanced security features.
+ * Open API for Developer Testing (Milestone 3)
  * 
  * Features:
  * - ZK proof verification (Groth16 via snarkjs)
@@ -16,6 +14,7 @@
  * - CORS enabled for developer access
  * - Swagger/OpenAPI documentation endpoint
  * 
+ * API Base URL: https://your-relayer.example.com
  * ============================================================================
  */
 
@@ -644,19 +643,21 @@ async function processWithdrawal(job) {
   ];
   if (poolType === 'token') args.push(principalCV(tokenContract));
 
+  const txNetwork = CONFIG.NETWORK === 'mainnet' ? STACKS_MAINNET : STACKS_TESTNET;
+  
   const tx = await makeContractCall({
     contractAddress: CONFIG.CONTRACT_ADDRESS,
     contractName,
     functionName: 'withdraw',
     functionArgs: args,
     senderKey: stacksPrivateKey,
-    network: network(),
+    network: txNetwork,
     anchorMode: AnchorMode.Any,
-    fee: 2000
+    fee: 2000n
   });
 
   // 9. Broadcast
-  const result = await broadcastTransaction(tx, network());
+  const result = await broadcastTransaction(tx, txNetwork);
   if (result.error) throw new Error(`Broadcast failed: ${result.error}`);
   
   console.log(`  ✅ TX: ${result.txid}`);
