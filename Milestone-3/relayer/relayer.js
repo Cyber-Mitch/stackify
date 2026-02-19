@@ -302,8 +302,14 @@ function calculateFee() {
 function constructMessage(root, nullifierHash, recipient, fee) {
   const rootBuf = Buffer.from(root.replace('0x', ''), 'hex');
   const nullBuf = Buffer.from(nullifierHash.replace('0x', ''), 'hex');
-  const recipBuf = Buffer.from(serializeCV(principalCV(recipient)));
-  const feeBuf = Buffer.from(serializeCV(uintCV(fee)));
+  
+  // In v7.x, serializeCV returns Uint8Array
+  const recipSerialized = serializeCV(principalCV(recipient));
+  const feeSerialized = serializeCV(uintCV(fee));
+  
+  const recipBuf = Buffer.from(recipSerialized);
+  const feeBuf = Buffer.from(feeSerialized);
+  
   return crypto.createHash('sha256').update(Buffer.concat([rootBuf, nullBuf, recipBuf, feeBuf])).digest();
 }
 
@@ -634,34 +640,53 @@ async function processWithdrawal(job) {
 
   // 8. Build TX
   const contractName = poolType === 'stx' ? CONFIG.CONTRACT_NAME_STX : CONFIG.CONTRACT_NAME_TOKEN;
+  
+  // Convert to Uint8Array for v7.x compatibility
+  const rootBuffer = new Uint8Array(Buffer.from(rootHex, 'hex'));
+  const nullifierBuffer = new Uint8Array(Buffer.from(nullifierHex, 'hex'));
+  const signatureBuffer = new Uint8Array(signature);
+  
   const args = [
-    bufferCV(Buffer.from(rootHex, 'hex')),
-    bufferCV(Buffer.from(nullifierHex, 'hex')),
+    bufferCV(rootBuffer),
+    bufferCV(nullifierBuffer),
     principalCV(recipient),
     uintCV(totalFee),
-    bufferCV(signature)
+    bufferCV(signatureBuffer)
   ];
   if (poolType === 'token') args.push(principalCV(tokenContract));
 
-  const txNetwork = CONFIG.NETWORK === 'mainnet' ? STACKS_MAINNET : STACKS_TESTNET;
+  console.log('  Building transaction...');
+  console.log(`    Contract: ${CONFIG.CONTRACT_ADDRESS}.${contractName}`);
+  console.log(`    Sender: ${stacksAddress}`);
   
-  const tx = await makeContractCall({
-    contractAddress: CONFIG.CONTRACT_ADDRESS,
-    contractName,
-    functionName: 'withdraw',
-    functionArgs: args,
-    senderKey: stacksPrivateKey,
-    network: txNetwork,
-    anchorMode: AnchorMode.Any,
-    fee: 2000n
-  });
+  try {
+    const tx = await makeContractCall({
+      contractAddress: CONFIG.CONTRACT_ADDRESS,
+      contractName,
+      functionName: 'withdraw',
+      functionArgs: args,
+      senderKey: stacksPrivateKey,
+      network: STACKS_TESTNET,
+      anchorMode: AnchorMode.Any,
+      fee: 2000
+    });
+    console.log('  ✓ Transaction built');
 
-  // 9. Broadcast
-  const result = await broadcastTransaction(tx, txNetwork);
-  if (result.error) throw new Error(`Broadcast failed: ${result.error}`);
-  
-  console.log(`  ✅ TX: ${result.txid}`);
-  return { txid: result.txid, recipient, fee: totalFee, pool: poolType };
+    // 9. Broadcast
+    console.log('  Broadcasting transaction...');
+    const result = await broadcastTransaction(tx, STACKS_TESTNET);
+    
+    if (result.error) {
+      throw new Error(`Broadcast failed: ${result.error} - ${result.reason}`);
+    }
+    
+    console.log(`  ✅ TX: ${result.txid}`);
+    return { txid: result.txid, recipient, fee: totalFee, pool: poolType };
+    
+  } catch (txError) {
+    console.error('  Transaction error:', txError.message);
+    throw txError;
+  }
 }
 
 // ============= STARTUP =============
