@@ -245,8 +245,7 @@ async function initStacksWallet() {
     stacksPrivateKey = account.stxPrivateKey;
     
     // Get the address from private key using network string
-    // In v7.x, use 'testnet' or 'mainnet' string
-   const transactionVersion = CONFIG.NETWORK === 'mainnet' ? 0x00 : 0x80; // TransactionVersion
+    const transactionVersion = CONFIG.NETWORK === 'mainnet' ? 0x00 : 0x80;
     stacksAddress = getAddressFromPrivateKey(stacksPrivateKey, transactionVersion);
 
     console.log(`✓ Stacks wallet initialized: ${stacksAddress}`);
@@ -300,8 +299,6 @@ function constructMessage(root, nullifierHash, recipient, fee) {
   const rootBuf = Buffer.from(root.replace('0x', ''), 'hex');
   const nullBuf = Buffer.from(nullifierHash.replace('0x', ''), 'hex');
   
-  // Manual serialization to avoid v7.x serializeCV issues
-  // Just hash the recipient string and fee as bytes
   const recipBuf = Buffer.from(recipient, 'utf8');
   const feeBuf = Buffer.alloc(8);
   feeBuf.writeBigUInt64BE(BigInt(fee));
@@ -408,7 +405,6 @@ app.post('/deposit/compute-commitment', async (req, res) => {
   try {
     let { nullifier, secret } = req.body;
     
-    // Generate random if not provided
     if (!nullifier) nullifier = crypto.randomBytes(31).toString('hex');
     if (!secret) secret = crypto.randomBytes(31).toString('hex');
     
@@ -479,7 +475,6 @@ app.post('/merkle/index', async (req, res) => {
     const tree = pool === 'stx' ? merkleTreeSTX : merkleTreeToken;
     const { root, index } = tree.insert(BigInt(commitment));
     
-    // Track depositor
     const depHash = crypto.createHash('sha256').update(depositor).digest('hex');
     depositorHashes.add(depHash);
     
@@ -596,7 +591,6 @@ async function processWithdrawal(job) {
   console.log('  ✓ Proof valid');
 
   // 2. Extract signals (8 public signals)
-  // [root, nullifierHash, recipient, relayer, fee, refund, denomination, recipientCommitment]
   if (!publicSignals || publicSignals.length < 8) {
     throw new Error(`Invalid publicSignals: expected 8, got ${publicSignals?.length || 0}`);
   }
@@ -637,7 +631,6 @@ async function processWithdrawal(job) {
   // 8. Build TX
   const contractName = poolType === 'stx' ? CONFIG.CONTRACT_NAME_STX : CONFIG.CONTRACT_NAME_TOKEN;
   
-  // Convert to Uint8Array for v7.x compatibility
   const rootBuffer = new Uint8Array(Buffer.from(rootHex, 'hex'));
   const nullifierBuffer = new Uint8Array(Buffer.from(nullifierHex, 'hex'));
   const signatureBuffer = new Uint8Array(signature);
@@ -656,8 +649,43 @@ async function processWithdrawal(job) {
   console.log(`    Sender: ${stacksAddress}`);
   
   try {
-    // v7.x API - use 'testnet' string instead of STACKS_TESTNET object for some functions
+    // ========== DEBUG START ==========
+    console.log('\n  ===== DEBUG INFO =====');
+    try {
+      const txPkg = require('@stacks/transactions/package.json');
+      console.log(`  DEBUG: @stacks/transactions version: ${txPkg.version}`);
+    } catch (e) {
+      console.log('  DEBUG: Could not read @stacks/transactions version');
+    }
+    try {
+      const netPkg = require('@stacks/network/package.json');
+      console.log(`  DEBUG: @stacks/network version: ${netPkg.version}`);
+    } catch (e) {
+      console.log('  DEBUG: Could not read @stacks/network version');
+    }
+    console.log(`  DEBUG: typeof STACKS_TESTNET: ${typeof STACKS_TESTNET}`);
+    console.log(`  DEBUG: STACKS_TESTNET value: ${JSON.stringify(STACKS_TESTNET)}`);
+    console.log(`  DEBUG: typeof STACKS_MAINNET: ${typeof STACKS_MAINNET}`);
+    console.log(`  DEBUG: typeof makeContractCall: ${typeof makeContractCall}`);
+    console.log(`  DEBUG: typeof broadcastTransaction: ${typeof broadcastTransaction}`);
+    console.log(`  DEBUG: typeof AnchorMode: ${typeof AnchorMode}`);
+    console.log(`  DEBUG: AnchorMode value: ${JSON.stringify(AnchorMode)}`);
+    console.log(`  DEBUG: typeof bufferCV: ${typeof bufferCV}`);
+    console.log(`  DEBUG: typeof uintCV: ${typeof uintCV}`);
+    console.log(`  DEBUG: typeof principalCV: ${typeof principalCV}`);
+    console.log(`  DEBUG: stacksPrivateKey type: ${typeof stacksPrivateKey}`);
+    console.log(`  DEBUG: stacksPrivateKey length: ${stacksPrivateKey?.length}`);
+    console.log(`  DEBUG: stacksPrivateKey starts with: ${stacksPrivateKey?.slice(0, 8)}...`);
+    console.log(`  DEBUG: args count: ${args.length}`);
+    args.forEach((arg, i) => {
+      console.log(`  DEBUG: arg[${i}] type: ${arg?.type}, hasData: ${!!arg?.buffer || !!arg?.value}`);
+    });
+    console.log('  ===== END DEBUG =====\n');
+    // ========== DEBUG END ==========
+
     const networkObj = CONFIG.NETWORK === 'mainnet' ? STACKS_MAINNET : STACKS_TESTNET;
+    
+    console.log(`  DEBUG: Using networkObj: ${JSON.stringify(networkObj)}`);
 
     const txOptions = {
       contractAddress: CONFIG.CONTRACT_ADDRESS,
@@ -667,15 +695,50 @@ async function processWithdrawal(job) {
       senderKey: stacksPrivateKey,
       network: networkObj,
       anchorMode: AnchorMode.Any,
-      fee: 2000n,  // BigInt for v7.x
+      fee: 2000n,
     };
 
+    console.log('  DEBUG: txOptions keys:', Object.keys(txOptions));
+    console.log('  DEBUG: txOptions.network:', txOptions.network);
+    console.log('  DEBUG: txOptions.anchorMode:', txOptions.anchorMode);
+    console.log('  DEBUG: txOptions.fee:', txOptions.fee, typeof txOptions.fee);
+
     console.log('  Creating contract call...');
-    const tx = await makeContractCall(txOptions);
+    
+    let tx;
+    try {
+      tx = await makeContractCall(txOptions);
+    } catch (makeErr) {
+      console.error('  DEBUG: makeContractCall THREW:', makeErr.message);
+      console.error('  DEBUG: makeContractCall stack:', makeErr.stack);
+      throw makeErr;
+    }
+    
+    console.log(`  DEBUG: tx type: ${typeof tx}`);
+    console.log(`  DEBUG: tx constructor: ${tx?.constructor?.name}`);
+    console.log(`  DEBUG: tx keys: ${tx ? Object.keys(tx) : 'null'}`);
+    console.log(`  DEBUG: tx.serialize?: ${typeof tx?.serialize}`);
+    console.log(`  DEBUG: tx.payload?: ${typeof tx?.payload}`);
+    if (tx && typeof tx === 'object') {
+      console.log(`  DEBUG: tx proto methods:`, Object.getOwnPropertyNames(Object.getPrototypeOf(tx)));
+    }
+    
     console.log('  ✓ Transaction built');
 
+    // 9. Broadcast
     console.log('  Broadcasting transaction...');
-    const result = await broadcastTransaction(tx, networkObj);
+    
+    let result;
+    try {
+      result = await broadcastTransaction(tx, networkObj);
+    } catch (broadcastErr) {
+      console.error('  DEBUG: broadcastTransaction THREW:', broadcastErr.message);
+      console.error('  DEBUG: broadcastTransaction stack:', broadcastErr.stack);
+      throw broadcastErr;
+    }
+    
+    console.log(`  DEBUG: broadcast result type: ${typeof result}`);
+    console.log(`  DEBUG: broadcast result: ${JSON.stringify(result)}`);
     
     if (result.error) {
       throw new Error(`Broadcast failed: ${result.error} - ${result.reason}`);
