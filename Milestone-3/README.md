@@ -52,11 +52,18 @@ curl http://localhost:3000/health
 ## API Endpoints
 
 ```
-GET  /health                    - Status
-POST /deposit/compute-commitment - Generate credentials
-GET  /merkle/:pool              - Tree info
-POST /withdraw/stx              - Submit withdrawal
-GET  /job/:id                   - Job status
+  GET  /              - API info
+  GET  /docs          - OpenAPI docs
+  GET  /health        - Health check
+  POST /deposit/compute-commitment - Compute commitment
+  GET  /merkle/:pool  - Tree info
+  GET  /merkle/:pool/path/:idx - Merkle path
+  POST /merkle/index  - Index deposit
+  POST /withdraw/stx  - Submit withdrawal
+  GET  /job/:id       - Job status
+  GET  /stats         - Statistics
+  GET  /zeros         - Precomputed zeros
+
 ```
 
 ## Documentation
@@ -72,4 +79,4 @@ All code bugs fixed. See audit report for details.
 
 ## License
 
-MIT
+Glitch Gremlins
