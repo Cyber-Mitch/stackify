@@ -1,10 +1,18 @@
 import { useState, useEffect } from 'react';
-import { connect, request, disconnect, isConnected } from '@stacks/connect';
+import { connect, request, disconnect, isConnected, getLocalStorage } from '@stacks/connect';
 import axios from 'axios';
 import toast, { Toaster } from 'react-hot-toast';
 import { Shield, LogOut, Users } from 'lucide-react';
 
 const RELAYER_URL = 'http://localhost:3000';
+
+const hexToUint8Array = (hex) => {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  }
+  return bytes;
+};
 
 export default function App() {
   const [userAddress, setUserAddress] = useState(null);
@@ -25,24 +33,42 @@ export default function App() {
   const [jobId, setJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState(null);
 
-  const [health, setHealth] = useState(null);
+  // ==================== WALLET CONNECTION ====================
 
-  // ==================== FUNCTIONS ====================
-  const fetchHealth = async () => {
-    try {
-      const res = await axios.get(`${RELAYER_URL}/health`);
-      setHealth(res.data);
-    } catch {
-      toast.error('Relayer offline');
+  useEffect(() => {
+    // Check if already connected on mount
+    if (isConnected()) {
+      const data = getLocalStorage();
+      const addr = data?.addresses?.stx?.[0]?.address || data?.address;
+      if (addr) {
+        setUserAddress(addr);
+      }
     }
-  };
+
+    // Listen for storage changes (wallet updates)
+    const handleStorage = (e) => {
+      if (e.key === 'stacksConnect') {
+        const data = JSON.parse(e.newValue || '{}');
+        const addr = data.addresses?.stx?.[0]?.address || data.address;
+        setUserAddress(addr || null);
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
 
   const handleConnect = async () => {
     try {
-      const res = await connect();
-      const addr = res.addresses?.stx?.[0]?.address || res.address;
-      setUserAddress(addr);
-      toast.success('Wallet connected');
+      await connect();
+      const data = getLocalStorage();
+      const addr = data?.addresses?.stx?.[0]?.address || data?.address;
+      if (addr) {
+        setUserAddress(addr);
+        toast.success('Wallet connected');
+      } else {
+        toast.error('No address found – try reconnecting');
+      }
     } catch {
       toast.error('Connection cancelled');
     }
@@ -54,7 +80,7 @@ export default function App() {
     toast.success('Disconnected');
   };
 
-  // DEPOSIT
+  // ==================== DEPOSIT ====================
   const generateNote = async () => {
     setLoading(true);
     try {
@@ -80,9 +106,9 @@ export default function App() {
         contractAddress: 'ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N',
         contractName,
         functionName: 'deposit',
-        functionArgs: [{ type: 'buffer', value: Buffer.from(commitmentData.commitment, 'hex') }],
+        functionArgs: [{ type: 'buffer', value: hexToUint8Array(commitmentData.commitment) }],
       });
-      toast.success(`Deposit sent to ${pool.toUpperCase()} pool!`);
+      toast.success(`Deposit sent to ${pool.toUpperCase()} Pool!`);
     } catch {
       toast.error('Transaction rejected');
     }
@@ -98,15 +124,14 @@ export default function App() {
         depositor: userAddress,
         pool
       });
-      toast.success('Deposit indexed successfully');
-      fetchHealth();
+      toast.success('Deposit indexed');
     } catch {
       toast.error('Indexing failed');
     }
     setLoading(false);
   };
 
-  // WITHDRAW
+  // ==================== WITHDRAW ====================
   const submitWithdraw = async () => {
     if (!proof || !publicSignals || !recipient) return toast.error('Fill all fields');
     if (pool === 'token' && !tokenContract) return toast.error('Enter token contract address');
@@ -125,10 +150,10 @@ export default function App() {
       const res = await axios.post(`${RELAYER_URL}${endpoint}`, payload);
 
       setJobId(res.data.jobId);
-      toast.success(`Job queued in ${pool.toUpperCase()} pool`);
+      toast.success(`Job queued in ${pool.toUpperCase()} Pool`);
       pollJob(res.data.jobId);
-    } catch (e) {
-      toast.error(e.response?.data?.error || 'Submit failed');
+    } catch {
+      toast.error('Submit failed');
     }
     setLoading(false);
   };
@@ -150,15 +175,6 @@ export default function App() {
     }, 2500);
   };
 
-  useEffect(() => {
-    if (isConnected()) {
-      const data = JSON.parse(localStorage.getItem('stacksConnect') || '{}');
-      setUserAddress(data.addresses?.stx?.[0]?.address || null);
-    }
-    fetchHealth();
-  }, []);
-
-  // ==================== JSX ====================
   return (
     <div className="min-h-screen bg-[#050507] text-white overflow-x-hidden">
       <Toaster position="top-center" toastOptions={{ style: { background: '#111', color: '#fff', border: '1px solid #22ff99' } }} />
@@ -172,13 +188,11 @@ export default function App() {
             </div>
             <span className="text-3xl font-bold bg-gradient-to-r from-cyan-400 via-emerald-400 to-cyan-400 bg-clip-text text-transparent">Stackify</span>
           </div>
-
           <div className="flex items-center gap-8 text-sm font-medium">
             <a href="#how" className="hover:text-emerald-400 transition">How it works</a>
             <a href="#features" className="hover:text-emerald-400 transition">Features</a>
             <a href="#roadmap" className="hover:text-emerald-400 transition">Roadmap</a>
           </div>
-
           {userAddress ? (
             <div className="flex items-center gap-4">
               <div className="text-xs font-mono px-4 py-2 bg-white/5 rounded-full border border-white/10">
@@ -196,10 +210,8 @@ export default function App() {
         </div>
       </nav>
 
-      {/* HERO & HOW IT WORKS remain the same (copy from previous version if needed) */}
-
-      {/* THE APP - CLEAN SEPARATION */}
-      <section id="app" className="py-20 bg-black/40 border-t border-b border-white/10">
+      {/* THE APP */}
+      <section id="app" className="pt-32 pb-20">
         <div className="max-w-4xl mx-auto px-6">
           <div className="bg-[#0a0a0f] border border-white/10 rounded-3xl p-10">
             
@@ -219,7 +231,7 @@ export default function App() {
               </button>
             </div>
 
-            <h2 className="text-4xl font-bold mb-8">
+            <h2 className="text-4xl font-bold mb-8 text-center">
               {pool === 'stx' ? 'STX Pool' : 'SIP-10 Token Pool'}
             </h2>
 
@@ -259,7 +271,6 @@ export default function App() {
                     <div>Commitment: 0x{commitmentData.commitment}</div>
                     <div>Nullifier: {commitmentData.nullifier}</div>
                     <div>Secret: {commitmentData.secret}</div>
-                    
                     <div className="pt-6 grid grid-cols-2 gap-4">
                       <button onClick={depositOnChain} className="py-4 bg-white text-black rounded-2xl font-bold">Deposit to {pool.toUpperCase()} Pool</button>
                       <button onClick={indexDeposit} className="py-4 bg-white/10 hover:bg-white/20 rounded-2xl">Index in Pool</button>
@@ -275,12 +286,7 @@ export default function App() {
                 <input value={recipient} onChange={e => setRecipient(e.target.value)} placeholder="Recipient address" className="w-full bg-black border border-white/10 rounded-2xl px-6 py-5 font-mono" />
 
                 {pool === 'token' && (
-                  <input 
-                    value={tokenContract} 
-                    onChange={e => setTokenContract(e.target.value)} 
-                    placeholder="Token Contract Address (SIP-10)" 
-                    className="w-full bg-black border border-white/10 rounded-2xl px-6 py-5 font-mono" 
-                  />
+                  <input value={tokenContract} onChange={e => setTokenContract(e.target.value)} placeholder="SIP-10 Token Contract Address" className="w-full bg-black border border-white/10 rounded-2xl px-6 py-5 font-mono" />
                 )}
 
                 <div>
@@ -304,27 +310,8 @@ export default function App() {
         </div>
       </section>
 
-      {/* Features & Footer (same as before) */}
-      <section id="features" className="py-24">
-        <div className="max-w-6xl mx-auto px-6 text-center">
-          <h2 className="text-5xl font-bold mb-6">Enterprise-grade privacy infrastructure</h2>
-          <div className="grid md:grid-cols-2 gap-6 mt-16">
-            {[
-              { icon: Shield, title: "zk-SNARK Privacy", desc: "Mathematical privacy. No one can link your deposit to your withdrawal." },
-              { icon: Users, title: "Relayer Network", desc: "Decentralized relayers pay the gas. You stay completely anonymous." },
-            ].map((f, i) => (
-              <div key={i} className="bg-[#111113] border border-white/10 rounded-3xl p-10 text-left hover:border-emerald-400/50 transition">
-                <f.icon className="w-12 h-12 text-emerald-400 mb-6" />
-                <h3 className="text-2xl font-semibold mb-3">{f.title}</h3>
-                <p className="text-gray-400">{f.desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       <footer className="py-12 border-t border-white/10 text-center text-sm text-gray-500">
-        Built with ❤️ on Stacks • Stackify 2026
+        Built on Stacks • Stackify 2026
       </footer>
     </div>
   );
