@@ -1,19 +1,23 @@
 /**
  * ============================================================================
- * SHIELDED POOL RELAYER v2.4 - Multi-Relayer Ready (WALLET FULLY FIXED)
+ * SHIELDED POOL RELAYER v2.1 - Multi-Relayer Ready
  * ============================================================================
  * 
+ * Open API for Developer Testing
  * 
- * FIXED in v2.4:
- *   • Wallet address generation now uses string network ("testnet"/"mainnet")
- *     → 100% compatible with ALL versions of @stacks/transactions (no more "undefined for hashMode 0")
- *   • Removed numeric 0x00/0x80 and TransactionVersion enum
- *   • Strong wallet safety guard + improved logging
- *   • Broadcast fallback remains
+ * Features:
+ * - ZK proof verification (Groth16 via snarkjs)
+ * - Incremental Merkle tree (20 levels, matches Tornado Cash)
+ * - Multi-relayer support
+ * - Same-address prevention
+ * - Rate limiting
+ * - CORS enabled for developer access
+ * - Swagger/OpenAPI documentation endpoint
  * 
- * API Base URL: http://localhost:3000
+ * 
  * ============================================================================
- */
+**/
+
 
 require('dotenv').config();
 
@@ -42,7 +46,7 @@ const path = require('path');
 // ============= CONFIGURATION =============
 
 const CONFIG = {
-  // Merkle tree (matches Tornado Cash)
+  // Merkle tree
   MERKLE_TREE_LEVELS: 20,
   ROOT_HISTORY_SIZE: 30,
   
@@ -329,7 +333,7 @@ app.get('/', (req, res) => {
   res.json({
     name: 'Shielded Pool Relayer API',
     version: CONFIG.API_VERSION,
-    description: 'Privacy mixer relayer for Stacks blockchain - v2.4 wallet fixed',
+    description: 'Privacy mixer relayer for Stacks blockchain',
     documentation: '/docs',
     endpoints: {
       health: 'GET /health',
@@ -353,7 +357,7 @@ app.get('/docs', (req, res) => {
     info: {
       title: 'Shielded Pool Relayer API',
       version: '2.4.0',
-      description: 'Open API for developer testing - Milestone 3 (wallet fixed)'
+      description: 'Open API for developer testing'
     },
     servers: [{ url: `http://localhost:${CONFIG.PORT}` }],
     paths: {}
@@ -661,7 +665,7 @@ async function processWithdrawal(job) {
 
 async function main() {
   console.log('\n' + '='.repeat(60));
-  console.log('  SHIELDED POOL RELAYER v2.4 - WALLET FIXED');
+  console.log('  SHIELDED POOL RELAYER ')
   console.log('='.repeat(60));
   
   await initPoseidon();

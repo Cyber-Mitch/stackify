@@ -35,6 +35,7 @@
             "@stacks/transactions": "^7.3.1",
             "@tailwindcss/vite": "*",
             "@vitejs/plugin-react": "*",
+            "buffer": "^6.0.3",
             "circomlib": "^2.0.5",
             "class-variance-authority": "^0.7.1",
             "clsx": "*",
