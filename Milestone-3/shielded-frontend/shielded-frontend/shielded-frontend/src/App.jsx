@@ -14,8 +14,16 @@ const hexToUint8Array = (hex) => {
   return bytes;
 };
 
+const getInitialAddress = () => {
+  if (isConnected()) {
+    const data = getLocalStorage();
+    return data?.addresses?.stx?.[0]?.address || data?.address || null;
+  }
+  return null;
+};
+
 export default function App() {
-  const [userAddress, setUserAddress] = useState(null);
+  const [userAddress, setUserAddress] = useState(getInitialAddress);
   const [pool, setPool] = useState('stx'); // 'stx' or 'token'
   const [tab, setTab] = useState('deposit');
   const [loading, setLoading] = useState(false);
@@ -36,16 +44,7 @@ export default function App() {
   // ==================== WALLET CONNECTION ====================
 
   useEffect(() => {
-    // Check if already connected on mount
-    if (isConnected()) {
-      const data = getLocalStorage();
-      const addr = data?.addresses?.stx?.[0]?.address || data?.address;
-      if (addr) {
-        setUserAddress(addr);
-      }
-    }
-
-    // Listen for storage changes (wallet updates)
+    // Only listen for storage changes
     const handleStorage = (e) => {
       if (e.key === 'stacksConnect') {
         const data = JSON.parse(e.newValue || '{}');
@@ -171,7 +170,9 @@ export default function App() {
           clearInterval(int);
           toast.error(`Job failed: ${res.data.error}`);
         }
-      } catch {}
+      } catch {
+        // Silently ignore polling errors
+      }
     }, 2500);
   };
 
