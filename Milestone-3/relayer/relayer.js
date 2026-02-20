@@ -3,7 +3,6 @@
  * SHIELDED POOL RELAYER v2.4 - Multi-Relayer Ready (WALLET FULLY FIXED)
  * ============================================================================
  * 
- * Open API for Developer Testing (Milestone 3)
  * 
  * FIXED in v2.4:
  *   • Wallet address generation now uses string network ("testnet"/"mainnet")
