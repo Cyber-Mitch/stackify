@@ -39,14 +39,18 @@
 (define-constant ERR-TREE-FULL (err u108))              ;; Merkle tree has reached max capacity
 (define-constant ERR-INVALID-COMMITMENT (err u109))     ;; Commitment cannot be zero
 (define-constant ERR-SAME-ADDRESS-WITHDRAWAL (err u110)) ;; Cannot withdraw to depositor address
+(define-constant ERR-INVALID-AMOUNT (err u111))   ;; New for variable amounts
 
 ;; =============================================================================
 ;; CONFIGURATION CONSTANTS (IMMUTABLE)
 ;; These values cannot be changed after deployment
 ;; =============================================================================
+;; Allowed deposit amounts (exact list you requested)
+(define-constant ALLOWED_AMOUNTS (list 
+  u10 u100 u110 u1000 u1010 u10000 u10010 u100000 u110000 u1000000))
 
-;; The fixed amount for each deposit/withdrawal (1 STX = 1,000,000 microSTX)
-(define-constant DENOMINATION u1000000)
+;; Conversion: 1 STX = 1,000,000 microSTX
+(define-constant MICROSTX_PER_STX u1000000)
 
 ;; Merkle tree depth: 2^20 = 1,048,576 maximum deposits
 (define-constant MERKLE_TREE_LEVELS u20)
@@ -98,13 +102,14 @@
 (define-map nullifiers (buff 32) bool)
 
 ;; Stores deposit information for each commitment
+;; Stores deposit inormation includes variable amount
 ;; Key: commitment hash, Value: deposit metadata
 (define-map commitments (buff 32) { 
-  leaf-index: uint,      ;; Position in Merkle tree
-  block-height: uint,    ;; When deposit was made
-  depositor: principal   ;; Who made the deposit
+  leaf-index: uint,
+  amount: uint,           ;; Variable amount
+  block-height: uint,
+  depositor: principal
 })
-
 ;; Circular buffer storing recent Merkle roots
 ;; Key: index (0 to ROOT_HISTORY_SIZE-1), Value: root hash
 (define-map roots uint (buff 32))
@@ -181,6 +186,20 @@
 ;; 
 ;; Returns: 32-byte SHA256 hash of the concatenated parameters
 ;; ---------------------------------------------------------------------------
+
+;; Check if amount is in allowed list
+(define-private (is-allowed-amount (amount uint))
+  (or (is-eq amount u10)
+  (or (is-eq amount u100)
+  (or (is-eq amount u110)
+  (or (is-eq amount u1000)
+  (or (is-eq amount u1010)
+  (or (is-eq amount u10000)
+  (or (is-eq amount u10010)
+  (or (is-eq amount u100000)
+  (or (is-eq amount u110000)
+      (is-eq amount u1000000)))))))))))
+
 (define-private (construct-withdrawal-message 
     (root (buff 32)) 
     (nullifier-hash (buff 32)) 
@@ -265,7 +284,7 @@
 ;; ---------------------------------------------------------------------------
 ;; deposit: Add funds to the privacy pool
 ;; 
-;; Purpose: Accept a deposit of exactly DENOMINATION microSTX
+;; Purpose: Accept a deposit of fix variable amount (must be in allowed list) into the pool with a commitment
 ;; User provides a commitment = Poseidon(nullifier, secret, denomination)
 ;; This commitment is computed off-chain (no ZK proof needed for deposits)
 ;; 
@@ -280,13 +299,14 @@
 ;; 
 ;; Returns: (ok leaf-index) on success, error otherwise
 ;; ---------------------------------------------------------------------------
-(define-public (deposit (commitment (buff 32)))
+(define-public (deposit (commitment (buff 32)) (amount uint))
   (let 
     (
       ;; Get the next available position in the Merkle tree
       (leaf-index (var-get next-leaf-index))
       ;; Hash the depositor address for privacy-preserving tracking
       (depositor-hash (hash-principal tx-sender))
+      (microAmount (* amount MICROSTX_PER_STX))   ;; Convert STX to microSTX for transfer
     )
     (begin
       ;; === VALIDATION CHECKS ===
@@ -299,46 +319,39 @@
       
       ;; Check commitment is not zero (invalid commitment)
       (asserts! (not (is-eq commitment 0x0000000000000000000000000000000000000000000000000000000000000000)) ERR-INVALID-COMMITMENT)
+
+      (asserts! (is-allowed-amount amount) ERR-INVALID-AMOUNT)
       
-      ;; Check this commitment hasn't been used before
       (asserts! (is-none (map-get? commitments commitment)) ERR-DUPLICATE-COMMITMENT)
 
-      ;; === STATE UPDATES ===
       
-      ;; Store the commitment with metadata
+     
+
+      ;; Store commitment with amount in STX (for readability)
       (map-set commitments commitment { 
         leaf-index: leaf-index, 
+        amount: amount,
         block-height: stacks-block-height, 
         depositor: tx-sender 
       })
-      
-      ;; Track that this address has deposited (for same-address prevention)
+
       (map-set depositor-hashes depositor-hash true)
-      
-      ;; Increment the leaf index for next deposit
       (var-set next-leaf-index (+ leaf-index u1))
-      
-      ;; Increment deposit counter
       (var-set total-deposits (+ (var-get total-deposits) u1))
 
-      ;; === TRANSFER STX ===
-      
-      ;; Transfer exactly DENOMINATION microSTX from user to contract
-      (try! (stx-transfer? DENOMINATION tx-sender current-contract))
+      ;; Transfer in microSTX
+      (try! (stx-transfer? amount tx-sender current-contract))
 
-      ;; === EMIT EVENT ===
-      
-      ;; Log deposit for relayer to pick up and add to Merkle tree
       (print { 
         event: "deposit", 
         commitment: commitment, 
+        amount: amount,         
         leaf-index: leaf-index, 
-        denomination: DENOMINATION, 
         depositor: tx-sender, 
         timestamp: stacks-block-time 
       })
-      
-      ;; Return the leaf index so user knows their position
+
+      ;;Return the leaf index so user knows their position
       (ok leaf-index))))
 
 ;; =============================================================================
@@ -348,7 +361,7 @@
 ;; ---------------------------------------------------------------------------
 ;; withdraw: Remove funds from the privacy pool
 ;; 
-;; Purpose: Allow withdrawal of DENOMINATION microSTX to any address
+;; Purpose: Allow withdrawal of FIXED variable amount to any address aprt from depositor address (same-address prevention)
 ;; User must provide a valid relayer signature (relayer verified ZK proof off-chain)
 ;; 
 ;; Flow:
@@ -372,29 +385,21 @@
     (nullifier-hash (buff 32)) 
     (recipient principal) 
     (fee uint) 
-    (signature (buff 64)))
+    (signature (buff 64))
+    (amount uint))
   (let 
     (
+      (microAmount (* amount MICROSTX_PER_STX))
       ;; Calculate the base fee (0.5% of denomination)
-      (base-fee (calculate-fee DENOMINATION))
+      (base-fee (calculate-fee amount))
       ;; Total fee = base fee + any additional tip
       (total-fee (+ base-fee fee))
-      
-    )
-      ;; Check fee BEFORE calculating payout
-      (asserts! (< total-fee DENOMINATION) ERR-INVALID-FEE)
-      
-  (let    
-    (
-      ;; Now safe to calculate payout
-      (payout (- DENOMINATION total-fee))
-      ;; Construct the message that should have been signed by relayer
+      (payout (- amount total-fee))
       (message-hash (construct-withdrawal-message root nullifier-hash recipient total-fee))
-
     )
     (begin
       ;; === VALIDATION CHECKS ===
-      
+      ;; === FEE CHECK HAPPENS BEFORE PAYOUT CALCULATION ===
       ;; Check contract is not paused
       (asserts! (not (var-get paused)) ERR-CONTRACT-PAUSED)
       
@@ -404,14 +409,16 @@
       ;; Check nullifier hasn't been used (prevents double-withdrawal)
       (asserts! (is-none (map-get? nullifiers nullifier-hash)) ERR-DOUBLE-SPEND)
       
-      
+      (asserts! (is-allowed-amount amount) ERR-INVALID-AMOUNT)
       
       ;; Check contract has enough balance
-      (asserts! (>= (stx-get-balance current-contract) DENOMINATION) ERR-INSUFFICIENT-BALANCE)
+      (asserts! (>= (stx-get-balance current-contract) microAmount) ERR-INSUFFICIENT-BALANCE)
       
       ;; CRITICAL: Check recipient is not a known depositor (same-address prevention)
       ;; This is a key privacy protection - can't deposit and withdraw to same address
       (asserts! (not (is-depositor recipient)) ERR-SAME-ADDRESS-WITHDRAWAL)
+
+      (asserts! (< total-fee microAmount) ERR-INVALID-FEE)   ;; Fee check BEFORE payout
       
       ;; Verify relayer's signature on the withdrawal message
       ;; This proves relayer verified the ZK proof off-chain
@@ -429,13 +436,10 @@
       ;; === TRANSFERS ===
       
       ;; Transfer payout to recipient (using Clarity 4 as-contract? with allowances)
-      (try! (as-contract? ((with-stx payout))
-        (unwrap-panic (stx-transfer? payout current-contract recipient))))
-      
-      ;; Transfer fee to treasury (if fee > 0)
+      (try! (stx-transfer? payout current-contract recipient))
+
       (if (> total-fee u0)
-        (try! (as-contract? ((with-stx total-fee))
-          (unwrap-panic (stx-transfer? total-fee current-contract (var-get treasury)))))
+        (try! (stx-transfer? total-fee current-contract (var-get treasury)))
         true)
 
       ;; === EMIT EVENT ===
@@ -445,12 +449,13 @@
         event: "withdrawal", 
         nullifier-hash: nullifier-hash, 
         recipient: recipient, 
+        amount: amount,                    ;; Logged in STX
         fee: total-fee, 
         treasury: (var-get treasury), 
         timestamp: stacks-block-time 
       })
       
-      (ok true)))))
+      (ok true))))
 
 ;; =============================================================================
 ;; ADMIN FUNCTIONS
@@ -577,10 +582,6 @@
 (define-read-only (get-next-leaf-index) 
   (var-get next-leaf-index))
 
-;; Get the fixed denomination
-(define-read-only (get-denomination) 
-  DENOMINATION)
-
 ;; Get the tree depth
 (define-read-only (get-levels) 
   MERKLE_TREE_LEVELS)
@@ -631,7 +632,7 @@
 ;; Get fee information
 (define-read-only (get-fee-info)
   { 
-    fee-bps: RELAYER_FEE_BPS, 
-    calculated-fee: (calculate-fee DENOMINATION), 
+    fee-bps: RELAYER_FEE_BPS,
+    fee-denominator: FEE_DENOMINATOR,
     treasury: (var-get treasury) 
   })

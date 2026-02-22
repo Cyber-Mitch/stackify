@@ -43,13 +43,15 @@
 (define-constant ERR-TREE-FULL (err u108))
 (define-constant ERR-INVALID-COMMITMENT (err u109))
 (define-constant ERR-SAME-ADDRESS-WITHDRAWAL (err u110))
+(define-constant ERR-INVALID-AMOUNT (err u111))
 
 ;; =============================================================================
 ;; CONFIGURATION CONSTANTS (IMMUTABLE)
 ;; =============================================================================
 
-;; Fixed amount for each deposit/withdrawal
-(define-constant DENOMINATION u1000000)
+;; Allowed deposit amounts in token units (exact list you requested)
+(define-constant ALLOWED_AMOUNTS (list 
+  u10 u100 u110 u1000 u1010 u10000 u10010 u100000 u110000 u1000000))
 
 ;; Merkle tree depth: 2^20 = 1,048,576 maximum deposits
 (define-constant MERKLE_TREE_LEVELS u20)
@@ -124,6 +126,18 @@
 (define-private (calculate-fee (amount uint))
   (/ (* amount RELAYER_FEE_BPS) FEE_DENOMINATOR))
 
+(define-private (is-allowed-amount (amount uint))
+  (or (is-eq amount u10)
+  (or (is-eq amount u100)
+  (or (is-eq amount u110)
+  (or (is-eq amount u1000)
+  (or (is-eq amount u1010)
+  (or (is-eq amount u10000)
+  (or (is-eq amount u10010)
+  (or (is-eq amount u100000)
+  (or (is-eq amount u110000)
+      (is-eq amount u1000000)))))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; construct-withdrawal-message: Build message for relayer signature
 ;; ---------------------------------------------------------------------------
@@ -193,7 +207,7 @@
 ;;   - commitment: 32-byte hash of (nullifier, secret, denomination)
 ;;   - token: The SIP-10 token contract to deposit
 ;; ---------------------------------------------------------------------------
-(define-public (deposit (commitment (buff 32)) (token <ft-trait>))
+(define-public (deposit (commitment (buff 32)) (amount uint) (token <ft-trait>))
   (let 
     (
       (leaf-index (var-get next-leaf-index))
@@ -216,12 +230,12 @@
         token: token-principal
       })
       (map-set depositor-hashes depositor-hash true)
-      (map-set token-balances token-principal (+ current-balance DENOMINATION))
+      (map-set token-balances token-principal (+ current-balance amount))
       (var-set next-leaf-index (+ leaf-index u1))
       (var-set total-deposits (+ (var-get total-deposits) u1))
 
       ;; Transfer tokens from user to contract
-      (try! (contract-call? token transfer tx-sender current-contract DENOMINATION none))
+      (try! (contract-call? token transfer tx-sender current-contract amount none))
 
       ;; Emit event
       (print { 
@@ -229,7 +243,7 @@
         commitment: commitment, 
         leaf-index: leaf-index, 
         token: token-principal,
-        denomination: DENOMINATION, 
+        amount: amount,
         depositor: tx-sender, 
         timestamp: stacks-block-time 
       })
@@ -257,22 +271,16 @@
     (recipient principal) 
     (fee uint) 
     (signature (buff 64))
+    (amount uint)
     (token <ft-trait>))
   (let 
     ( 
-      (base-fee (calculate-fee DENOMINATION))
+      (base-fee (calculate-fee amount))
 
       (total-fee (+ base-fee fee))
-    )
-    
-    ;; Check fee Before calculating payout
-    (asserts! (< total-fee DENOMINATION) ERR-INVALID-FEE)
 
-  (let
-    (
-      ;;Now safe to calculate payout
-      (payout (- DENOMINATION total-fee))
-      ;;Contruct withdrawal message that should have been signed by relayer
+      (payout (- amount total-fee))
+
       (message-hash (construct-withdrawal-message root nullifier-hash recipient total-fee))
 
       (token-principal (contract-of token))
@@ -284,14 +292,15 @@
       (asserts! (not (var-get paused)) ERR-CONTRACT-PAUSED)
       (asserts! (is-known-root root) ERR-INVALID-ROOT)
       (asserts! (is-none (map-get? nullifiers nullifier-hash)) ERR-DOUBLE-SPEND)
-      (asserts! (< total-fee DENOMINATION) ERR-INVALID-FEE)
-      (asserts! (>= current-balance DENOMINATION) ERR-INSUFFICIENT-BALANCE)
+      (asserts! (is-allowed-amount amount) ERR-INVALID-AMOUNT)
+      (asserts! (< total-fee amount) ERR-INVALID-FEE)
+      (asserts! (>= current-balance amount) ERR-INSUFFICIENT-BALANCE)
       (asserts! (not (is-depositor recipient)) ERR-SAME-ADDRESS-WITHDRAWAL)
       (asserts! (secp256r1-verify message-hash signature (var-get relayer-pubkey)) ERR-INVALID-SIGNATURE)
 
       ;; State updates
       (map-set nullifiers nullifier-hash true)
-      (map-set token-balances token-principal (- current-balance DENOMINATION))
+      (map-set token-balances token-principal (- current-balance amount))
       (var-set total-withdrawals (+ (var-get total-withdrawals) u1))
       (var-set total-fees-collected (+ (var-get total-fees-collected) total-fee))
 
@@ -316,7 +325,7 @@
         timestamp: stacks-block-time 
       })
       
-      (ok true)))))
+      (ok true))))
 
 ;; =============================================================================
 ;; ADMIN FUNCTIONS
@@ -405,7 +414,6 @@
     (map-get? roots (var-get current-root-index))))
 
 (define-read-only (get-next-leaf-index) (var-get next-leaf-index))
-(define-read-only (get-denomination) DENOMINATION)
 (define-read-only (get-levels) MERKLE_TREE_LEVELS)
 (define-read-only (is-nullifier-spent (h (buff 32))) (default-to false (map-get? nullifiers h)))
 (define-read-only (get-commitment-data (c (buff 32))) (map-get? commitments c))
@@ -428,7 +436,7 @@
 
 (define-read-only (get-fee-info)
   { 
-    fee-bps: RELAYER_FEE_BPS, 
-    calculated-fee: (calculate-fee DENOMINATION), 
-    treasury: (var-get treasury) 
+    fee-bps: RELAYER_FEE_BPS,
+    fee-denominator: FEE_DENOMINATOR,
+   treasury: (var-get treasury) 
   })
