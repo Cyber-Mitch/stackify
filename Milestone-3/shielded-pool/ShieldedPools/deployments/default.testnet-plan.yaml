@@ -18,14 +18,14 @@ plan:
         - contract-publish:
             contract-name: shielded-native-pool
             expected-sender: ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N
-            cost: 256020
+            cost: 258400
             path: contracts/shielded-native-pool.clar
             anchor-block-only: true
             clarity-version: 4
         - contract-publish:
             contract-name: shielded-token-pool
             expected-sender: ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N
-            cost: 175520
+            cost: 177660
             path: contracts/shielded-token-pool.clar
             anchor-block-only: true
             clarity-version: 4
