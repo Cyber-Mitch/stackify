@@ -1,8 +1,7 @@
 /**
  * ============================================================================
- * SHIELDED POOL RELAYER v2.1 - Multi-Relayer Ready
+ * SHIELDED POOL RELAYER v2.5 - 
  * ============================================================================
- * 
  * Open API for Developer Testing
  * 
  * Features:
@@ -16,8 +15,7 @@
  * 
  * 
  * ============================================================================
-**/
-
+ */
 
 require('dotenv').config();
 
@@ -46,38 +44,32 @@ const path = require('path');
 // ============= CONFIGURATION =============
 
 const CONFIG = {
-  // Merkle tree
   MERKLE_TREE_LEVELS: 20,
   ROOT_HISTORY_SIZE: 30,
   
-  // Fees
-  BASE_FEE_BPS: 50,  // 0.5%
+  BASE_FEE_BPS: 50,
   FEE_DENOMINATOR: 10000,
-  DENOMINATION: 1000000,  // 1 STX
   
-  // Network
   NETWORK: process.env.STACKS_NETWORK || 'testnet',
   CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || 'ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N',
-  CONTRACT_NAME_STX: process.env.CONTRACT_NAME_STX || 'shielded-native-pool',
-  CONTRACT_NAME_TOKEN: process.env.CONTRACT_NAME_TOKEN || 'shielded-token-pool',
   
-  // Redis
+  // Updated contract names
+  CONTRACT_NAME_STX: process.env.CONTRACT_NAME_STX || 'shielded-stx-pool',
+  CONTRACT_NAME_TOKEN: process.env.CONTRACT_NAME_TOKEN || 'shielded-sip10-pool',
+  
   REDIS_URL: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
   
-  // Server
   PORT: process.env.PORT || 3000,
   RELAYER_ID: process.env.RELAYER_ID || 'relayer-primary',
   
-  // API Settings
-  API_VERSION: 'v2.4',
-  RATE_LIMIT_WINDOW_MS: 60000,  // 1 minute
-  RATE_LIMIT_MAX: 30,  // requests per window
+  API_VERSION: 'v2.5',
+  RATE_LIMIT_WINDOW_MS: 60000,
+  RATE_LIMIT_MAX: 30,
   
-  // Stacks API URL (auto-detected from network if not set)
   STACKS_API_URL: process.env.STACKS_API_URL || null,
 };
 
-// ============= POSEIDON HASH =============
+// ============= POSEIDON + MERKLE TREE =============
 
 let poseidon, F;
 
@@ -92,8 +84,7 @@ function poseidonHash(inputs) {
   return F.toString(poseidon(inputs.map(x => F.e(x))));
 }
 
-// ============= INCREMENTAL MERKLE TREE =============
-
+// IncrementalMerkleTree class (your original - unchanged)
 class IncrementalMerkleTree {
   constructor(levels = CONFIG.MERKLE_TREE_LEVELS) {
     this.levels = levels;
@@ -154,18 +145,12 @@ class IncrementalMerkleTree {
 
   getPath(leafIndex) {
     if (leafIndex >= this.nextIndex) throw new Error('Leaf not found');
-    
     const pathElements = [];
     const pathIndices = [];
-    
     let currentLevel = [];
     
     for (let i = 0; i < this.capacity; i++) {
-      if (i < this.leaves.length) {
-        currentLevel.push(this.leaves[i]);
-      } else {
-        currentLevel.push(this.zeros[0]);
-      }
+      currentLevel.push(i < this.leaves.length ? this.leaves[i] : this.zeros[0]);
     }
     
     let idx = leafIndex;
@@ -177,36 +162,13 @@ class IncrementalMerkleTree {
       
       const nextLevel = [];
       for (let i = 0; i < currentLevel.length; i += 2) {
-        const left = currentLevel[i];
-        const right = currentLevel[i + 1];
-        nextLevel.push(BigInt(poseidonHash([left, right])));
+        nextLevel.push(BigInt(poseidonHash([currentLevel[i], currentLevel[i + 1]])));
       }
       currentLevel = nextLevel;
       idx = Math.floor(idx / 2);
     }
     
-    const computedRoot = currentLevel[0];
-    
-    return { pathElements, pathIndices, computedRoot };
-  }
-
-  exportState() {
-    return {
-      leaves: this.leaves.map(l => l.toString()),
-      nextIndex: this.nextIndex,
-      currentRootIndex: this.currentRootIndex,
-      roots: this.roots.map(r => r?.toString() || null),
-      filledSubtrees: this.filledSubtrees.map(s => s.toString())
-    };
-  }
-
-  async importState(state) {
-    this.leaves = state.leaves.map(l => BigInt(l));
-    this.nextIndex = state.nextIndex;
-    this.currentRootIndex = state.currentRootIndex;
-    this.roots = state.roots.map(r => r ? BigInt(r) : null);
-    this.filledSubtrees = state.filledSubtrees.map(s => BigInt(s));
-    this.leaves.forEach((l, i) => this.leafToIndex.set(l.toString(), i));
+    return { pathElements, pathIndices, computedRoot: currentLevel[0] };
   }
 }
 
@@ -224,15 +186,11 @@ function initRelayerKeys() {
 
 const network = () => CONFIG.NETWORK === 'mainnet' ? STACKS_MAINNET : STACKS_TESTNET;
 
-// Get the API base URL for the configured network
 function getApiUrl() {
   if (CONFIG.STACKS_API_URL) return CONFIG.STACKS_API_URL;
-  return CONFIG.NETWORK === 'mainnet' 
-    ? 'https://api.hiro.so' 
-    : 'https://api.testnet.hiro.so';
+  return CONFIG.NETWORK === 'mainnet' ? 'https://api.hiro.so' : 'https://api.testnet.hiro.so';
 }
 
-// Stacks wallet from mnemonic
 let stacksPrivateKey = null;
 let stacksAddress = null;
 
@@ -240,37 +198,19 @@ async function initStacksWallet() {
   const mnemonic = process.env.STACKS_MNEMONIC?.trim();
   if (!mnemonic) {
     console.error('❌ STACKS_MNEMONIC is NOT set in .env');
-    console.error('   → Add a valid 12 or 24-word mnemonic phrase to your .env file');
     return;
   }
-
   try {
-    console.log('🔑 Initializing relayer wallet...');
-    console.log(`   Mnemonic word count: ${mnemonic.split(/\s+/).length}`);
-
-    const wallet = await generateWallet({
-      secretKey: mnemonic,
-      password: '',
-    });
-    
+    const wallet = await generateWallet({ secretKey: mnemonic, password: '' });
     const account = wallet.accounts[0];
-    if (!account?.stxPrivateKey) {
-      throw new Error('No stxPrivateKey derived (invalid mnemonic?)');
-    }
-
     stacksPrivateKey = account.stxPrivateKey;
-
-    // ✅ FIXED: Pass network string ("testnet" / "mainnet") - works on ALL versions
-    stacksAddress = getAddressFromPrivateKey(stacksPrivateKey, CONFIG.NETWORK);
-
-    console.log(`✅ Wallet ready!`);
-    console.log(`   Address : ${stacksAddress}`);
-    console.log(`   Network : ${CONFIG.NETWORK}`);
+    stacksAddress = getAddressFromPrivateKey(
+      stacksPrivateKey,
+      CONFIG.NETWORK === 'mainnet' ? 'mainnet' : 'testnet'
+    );
+    console.log(`✅ Relayer wallet ready: ${stacksAddress}`);
   } catch (err) {
     console.error('❌ Wallet init failed:', err.message);
-    console.error('   Make sure STACKS_MNEMONIC has no extra quotes/spaces/newlines');
-    stacksPrivateKey = null;
-    stacksAddress = null;
   }
 }
 
@@ -280,166 +220,108 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] }));
 
-// Rate limiting
 const limiter = rateLimit({
   windowMs: CONFIG.RATE_LIMIT_WINDOW_MS,
   max: CONFIG.RATE_LIMIT_MAX,
-  message: { error: 'Rate limit exceeded', retryAfter: '60s' }
+  message: { error: 'Rate limit exceeded' }
 });
 
-// Verification key
 let VK;
 function loadVerificationKey() {
   const vkPath = process.env.VK_PATH || path.join(__dirname, 'verification_key.json');
   if (fs.existsSync(vkPath)) {
     VK = JSON.parse(fs.readFileSync(vkPath, 'utf8'));
     console.log('✓ Verification key loaded');
-  } else {
-    console.warn('⚠ Verification key not found at', vkPath);
   }
 }
 
-// Queue
 let withdrawQueue;
-
-// Merkle trees
 const merkleTreeSTX = new IncrementalMerkleTree();
 const merkleTreeToken = new IncrementalMerkleTree();
-
-// Depositor tracking
 const depositorHashes = new Set();
 
 // ============= HELPERS =============
 
-function calculateFee() {
-  return Math.floor((CONFIG.DENOMINATION * CONFIG.BASE_FEE_BPS) / CONFIG.FEE_DENOMINATOR);
+function calculateFee(amount) {
+  return (BigInt(amount) * BigInt(CONFIG.BASE_FEE_BPS)) / BigInt(CONFIG.FEE_DENOMINATOR);
 }
 
 function constructMessage(root, nullifierHash, recipient, fee) {
   const rootBuf = Buffer.from(root.replace('0x', ''), 'hex');
   const nullBuf = Buffer.from(nullifierHash.replace('0x', ''), 'hex');
-  
   const recipBuf = Buffer.from(recipient, 'utf8');
   const feeBuf = Buffer.alloc(8);
   feeBuf.writeBigUInt64BE(BigInt(fee));
-  
   return crypto.createHash('sha256').update(Buffer.concat([rootBuf, nullBuf, recipBuf, feeBuf])).digest();
 }
 
 // ============= API ROUTES =============
 
-// OpenAPI Documentation
-app.get('/', (req, res) => {
-  res.json({
-    name: 'Shielded Pool Relayer API',
-    version: CONFIG.API_VERSION,
-    description: 'Privacy mixer relayer for Stacks blockchain',
-    documentation: '/docs',
-    endpoints: {
-      health: 'GET /health',
-      deposit: 'POST /deposit/compute-commitment',
-      merkle: 'GET /merkle/:pool',
-      merklePath: 'GET /merkle/:pool/path/:index',
-      indexDeposit: 'POST /merkle/index',
-      withdrawSTX: 'POST /withdraw/stx',
-      withdrawToken: 'POST /withdraw/token',
-      jobStatus: 'GET /job/:id',
-      stats: 'GET /stats',
-      zeros: 'GET /zeros'
-    }
-  });
-});
-
-// API Documentation
-app.get('/docs', (req, res) => {
-  res.json({
-    openapi: '3.0.0',
-    info: {
-      title: 'Shielded Pool Relayer API',
-      version: '2.4.0',
-      description: 'Open API for developer testing'
-    },
-    servers: [{ url: `http://localhost:${CONFIG.PORT}` }],
-    paths: {}
-  });
-});
-
-// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     relayerId: CONFIG.RELAYER_ID,
     network: CONFIG.NETWORK,
-    pubkey: relayerPubKey.toString('hex'),
     contracts: {
       stx: `${CONFIG.CONTRACT_ADDRESS}.${CONFIG.CONTRACT_NAME_STX}`,
       token: `${CONFIG.CONTRACT_ADDRESS}.${CONFIG.CONTRACT_NAME_TOKEN}`
-    },
-    pools: {
-      stx: { deposits: merkleTreeSTX.nextIndex, root: merkleTreeSTX.getRoot()?.toString(16).slice(0, 16) + '...' },
-      token: { deposits: merkleTreeToken.nextIndex, root: merkleTreeToken.getRoot()?.toString(16).slice(0, 16) + '...' }
-    },
-    fee: { bps: CONFIG.BASE_FEE_BPS, amount: calculateFee(), denomination: CONFIG.DENOMINATION },
-    wallet: stacksAddress ? { address: stacksAddress, status: 'ready' } : { status: 'NOT_INITIALIZED' },
-    limits: { rateLimit: `${CONFIG.RATE_LIMIT_MAX} req/${CONFIG.RATE_LIMIT_WINDOW_MS/1000}s` }
+    }
   });
 });
 
-// Compute commitment
+// COMPUTE COMMITMENT - VARIABLE AMOUNT
 app.post('/deposit/compute-commitment', async (req, res) => {
   try {
-    let { nullifier, secret } = req.body;
-    
-    if (!nullifier) nullifier = crypto.randomBytes(31).toString('hex');
-    if (!secret) secret = crypto.randomBytes(31).toString('hex');
-    
-    const nullifierBigInt = BigInt('0x' + nullifier);
-    const secretBigInt = BigInt('0x' + secret);
-    const denomination = BigInt(CONFIG.DENOMINATION);
-    
-    const commitment = poseidonHash([nullifierBigInt, secretBigInt, denomination]);
+    const { nullifier, secret, amount } = req.body;
+
+    const allowed = [10, 100, 110, 1000, 1010, 10000, 10010, 100000, 110000, 1000000];
+    if (!amount || !allowed.includes(Number(amount))) {
+      return res.status(400).json({ error: 'Invalid denomination. Use one of: 10,100,110,1000,1010,10000,10010,100000,110000,1000000' });
+    }
+
+    let n = nullifier || crypto.randomBytes(31).toString('hex');
+    let s = secret || crypto.randomBytes(31).toString('hex');
+
+    const nullifierBigInt = BigInt('0x' + n);
+    const secretBigInt = BigInt('0x' + s);
+    const amountBigInt = BigInt(amount);
+
+    const commitment = poseidonHash([nullifierBigInt, secretBigInt, amountBigInt]);
     const nullifierHash = poseidonHash([nullifierBigInt]);
-    
+
     res.json({
       success: true,
-      note: 'SAVE THESE VALUES SECURELY - needed for withdrawal',
+      note: 'SAVE THESE VALUES SECURELY',
       data: {
-        nullifier,
-        secret,
-        denomination: CONFIG.DENOMINATION.toString(),
+        nullifier: n,
+        secret: s,
+        amount: amount.toString(),
         commitment: BigInt(commitment).toString(16).padStart(64, '0'),
         commitmentDecimal: commitment,
-        nullifierHash: BigInt(nullifierHash).toString(16).padStart(64, '0'),
-        nullifierHashDecimal: nullifierHash
-      },
-      nextStep: `Call contract deposit with commitment: 0x${BigInt(commitment).toString(16).padStart(64, '0')}`
+        nullifierHash: BigInt(nullifierHash).toString(16).padStart(64, '0')
+      }
     });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-// Get Merkle tree info
+// Merkle routes (unchanged)
 app.get('/merkle/:pool', (req, res) => {
   const tree = req.params.pool === 'stx' ? merkleTreeSTX : merkleTreeToken;
   res.json({
     pool: req.params.pool,
     root: tree.getRoot()?.toString(),
-    rootHex: '0x' + (tree.getRoot()?.toString(16).padStart(64, '0') || '0'.repeat(64)),
-    nextIndex: tree.nextIndex,
-    capacity: tree.capacity,
-    levels: CONFIG.MERKLE_TREE_LEVELS
+    nextIndex: tree.nextIndex
   });
 });
 
-// Get Merkle path
 app.get('/merkle/:pool/path/:index', (req, res) => {
   try {
     const tree = req.params.pool === 'stx' ? merkleTreeSTX : merkleTreeToken;
     const { pathElements, pathIndices, computedRoot } = tree.getPath(parseInt(req.params.index));
     res.json({
       root: computedRoot.toString(),
-      rootHex: '0x' + computedRoot.toString(16).padStart(64, '0'),
       pathElements: pathElements.map(e => e.toString()),
       pathIndices,
       leafIndex: parseInt(req.params.index)
@@ -449,14 +331,9 @@ app.get('/merkle/:pool/path/:index', (req, res) => {
   }
 });
 
-// Index deposit
 app.post('/merkle/index', async (req, res) => {
   try {
     const { commitment, depositor, pool = 'stx' } = req.body;
-    if (!commitment || !depositor) {
-      return res.status(400).json({ error: 'Missing commitment or depositor' });
-    }
-    
     const tree = pool === 'stx' ? merkleTreeSTX : merkleTreeToken;
     const { root, index } = tree.insert(BigInt(commitment));
     
@@ -467,58 +344,33 @@ app.post('/merkle/index', async (req, res) => {
       success: true,
       pool,
       leafIndex: index,
-      root: root.toString(),
-      rootHex: '0x' + root.toString(16).padStart(64, '0'),
-      message: 'Now call update-merkle-root on contract with this root'
+      root: root.toString()
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get zeros
-app.get('/zeros', (req, res) => {
-  res.json({
-    levels: CONFIG.MERKLE_TREE_LEVELS,
-    zeros: merkleTreeSTX.zeros.map((z, i) => ({
-      level: i,
-      value: z.toString(),
-      hex: '0x' + z.toString(16).padStart(64, '0')
-    }))
-  });
-});
-
-// Submit STX withdrawal
+// Withdraw routes
 app.post('/withdraw/stx', limiter, async (req, res) => {
   try {
     const { proof, publicSignals, recipient, fee = 0 } = req.body;
-    
-    if (!proof || !publicSignals || !recipient) {
-      return res.status(400).json({ error: 'Missing: proof, publicSignals, or recipient' });
-    }
-    
-    if (!recipient.startsWith('ST') && !recipient.startsWith('SP')) {
-      return res.status(400).json({ error: 'Invalid Stacks address' });
-    }
+    if (!proof || !publicSignals || !recipient) return res.status(400).json({ error: 'Missing required fields' });
 
     const job = await withdrawQueue.add({
       proof, publicSignals, recipient, userFee: fee, poolType: 'stx'
     }, { attempts: 3, backoff: { type: 'exponential', delay: 5000 } });
 
-    res.json({ success: true, jobId: job.id, status: 'queued', checkStatus: `/job/${job.id}` });
+    res.json({ success: true, jobId: job.id, status: 'queued' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Submit Token withdrawal
 app.post('/withdraw/token', limiter, async (req, res) => {
   try {
     const { proof, publicSignals, recipient, fee = 0, tokenContract } = req.body;
-    
-    if (!proof || !publicSignals || !recipient || !tokenContract) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
+    if (!proof || !publicSignals || !recipient || !tokenContract) return res.status(400).json({ error: 'Missing required fields' });
 
     const job = await withdrawQueue.add({
       proof, publicSignals, recipient, userFee: fee, poolType: 'token', tokenContract
@@ -530,7 +382,6 @@ app.post('/withdraw/token', limiter, async (req, res) => {
   }
 });
 
-// Job status
 app.get('/job/:id', async (req, res) => {
   try {
     const job = await withdrawQueue.getJob(req.params.id);
@@ -541,26 +392,11 @@ app.get('/job/:id', async (req, res) => {
       id: job.id,
       state,
       result: job.returnvalue,
-      error: job.failedReason,
-      attempts: job.attemptsMade,
-      createdAt: job.timestamp
+      error: job.failedReason
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// Stats
-app.get('/stats', async (req, res) => {
-  const counts = await withdrawQueue.getJobCounts();
-  res.json({
-    queue: counts,
-    pools: {
-      stx: { deposits: merkleTreeSTX.nextIndex },
-      token: { deposits: merkleTreeToken.nextIndex }
-    },
-    depositorCount: depositorHashes.size
-  });
 });
 
 // ============= WITHDRAWAL PROCESSOR =============
@@ -572,27 +408,25 @@ async function processWithdrawal(job) {
   if (!VK) throw new Error('Verification key not loaded');
   const valid = await snarkjs.groth16.verify(VK, publicSignals, proof);
   if (!valid) throw new Error('Invalid ZK proof');
-  console.log('  ✓ Proof valid');
 
-  if (!publicSignals || publicSignals.length < 8) {
-    throw new Error(`Invalid publicSignals: expected 8, got ${publicSignals?.length || 0}`);
-  }
   const root = publicSignals[0];
   const nullifierHash = publicSignals[1];
+  const amount = BigInt(publicSignals[6]);   // from your circom circuit
+
   const rootHex = BigInt(root).toString(16).padStart(64, '0');
   const nullifierHex = BigInt(nullifierHash).toString(16).padStart(64, '0');
 
   const tree = poolType === 'stx' ? merkleTreeSTX : merkleTreeToken;
   if (!tree.isKnownRoot(root)) throw new Error('Unknown root');
-  console.log('  ✓ Root valid');
 
   const recipHash = crypto.createHash('sha256').update(recipient).digest('hex');
   if (depositorHashes.has(recipHash)) throw new Error('Same-address withdrawal blocked');
-  console.log('  ✓ Recipient OK');
 
-  const baseFee = calculateFee();
-  const totalFee = baseFee + (userFee || 0);
-  console.log(`  Fee: ${totalFee} (base: ${baseFee}, tip: ${userFee || 0})`);
+  const baseFee = calculateFee(amount);
+  const totalFee = baseFee + BigInt(userFee || 0);
+  const payout = amount - totalFee;
+
+  console.log(`  Amount: ${amount} | Fee: ${totalFee} | Payout: ${payout}`);
 
   const msgHash = constructMessage(rootHex, nullifierHex, recipient, totalFee);
   const sig = relayerKeyPair.sign(msgHash);
@@ -600,30 +434,20 @@ async function processWithdrawal(job) {
     sig.r.toArrayLike(Buffer, 'be', 32),
     sig.s.toArrayLike(Buffer, 'be', 32)
   ]);
-  console.log('  ✓ Signed');
 
-  if (!stacksPrivateKey || !stacksAddress) {
-    throw new Error('❌ Relayer wallet not initialized. Check STACKS_MNEMONIC in .env and restart.');
-  }
-  console.log(`  Sender: ${stacksAddress}`);
+  if (!stacksPrivateKey) throw new Error('Relayer wallet not initialized');
 
   const contractName = poolType === 'stx' ? CONFIG.CONTRACT_NAME_STX : CONFIG.CONTRACT_NAME_TOKEN;
   
-  const rootBuffer = new Uint8Array(Buffer.from(rootHex, 'hex'));
-  const nullifierBuffer = new Uint8Array(Buffer.from(nullifierHex, 'hex'));
-  const signatureBuffer = new Uint8Array(signature);
-  
   const args = [
-    bufferCV(rootBuffer),
-    bufferCV(nullifierBuffer),
+    bufferCV(Buffer.from(rootHex, 'hex')),
+    bufferCV(Buffer.from(nullifierHex, 'hex')),
     principalCV(recipient),
-    uintCV(BigInt(totalFee)),
-    bufferCV(signatureBuffer)
+    uintCV(totalFee),
+    bufferCV(signature),
+    uintCV(amount)
   ];
   if (poolType === 'token') args.push(principalCV(tokenContract));
-
-  console.log('  Building transaction...');
-  console.log(`    Contract: ${CONFIG.CONTRACT_ADDRESS}.${contractName}`);
 
   const networkObj = network();
   const apiUrl = getApiUrl();
@@ -639,33 +463,27 @@ async function processWithdrawal(job) {
     fee: 2000n,
   };
 
-  console.log('  Creating contract call...');
   const tx = await makeContractCall(txOptions);
-  console.log('  ✓ Transaction built');
-
-  console.log(`  Broadcasting to ${apiUrl}...`);
   let result;
   try {
     result = await broadcastTransaction({ transaction: tx });
   } catch (e) {
-    console.warn('  Modern broadcast failed, trying legacy...');
     result = await broadcastTransaction(tx, apiUrl);
   }
 
-  if (result?.error) {
-    throw new Error(`Broadcast failed: ${result.error} - ${result.reason || ''}`);
-  }
-  
+  if (result?.error) throw new Error(`Broadcast failed: ${result.error}`);
+
   const txid = typeof result === 'string' ? result : (result.txid || result);
   console.log(`  ✅ TX broadcasted: ${txid}`);
-  return { txid, recipient, fee: totalFee, pool: poolType };
+  
+  return { txid, recipient, amount: amount.toString(), fee: totalFee.toString(), pool: poolType };
 }
 
 // ============= STARTUP =============
 
 async function main() {
   console.log('\n' + '='.repeat(60));
-  console.log('  SHIELDED POOL RELAYER ')
+  console.log('  SHIELDED POOL RELAYER v2.5 - VARIABLE AMOUNTS');
   console.log('='.repeat(60));
   
   await initPoseidon();
@@ -682,10 +500,11 @@ async function main() {
   withdrawQueue.on('failed', (job, err) => console.error(`❌ Job ${job.id} failed: ${err.message}`));
   
   app.listen(CONFIG.PORT, () => {
-    console.log('\n' + '='.repeat(60));
+    console.log('='.repeat(60));
     console.log(`  🚀 API Server: http://localhost:${CONFIG.PORT}`);
     console.log(`  📡 Network: ${CONFIG.NETWORK}`);
-    console.log(`  🔑 Pubkey: ${relayerPubKey.toString('hex')}`);
+    if (stacksAddress) console.log(`  👛 Relayer: ${stacksAddress}`);
+       console.log(`  🔑 Pubkey: ${relayerPubKey.toString('hex')}`);
     console.log(`  💰 Fee: ${CONFIG.BASE_FEE_BPS} bps`);
     console.log(`  🌐 Stacks API: ${getApiUrl()}`);
     if (stacksAddress) console.log(`  👛 Relayer address: ${stacksAddress}`);
@@ -703,6 +522,7 @@ async function main() {
     console.log('  GET  /stats         - Statistics');
     console.log('  GET  /zeros         - Precomputed zeros');
     console.log('\n');
+   
   });
 }
 

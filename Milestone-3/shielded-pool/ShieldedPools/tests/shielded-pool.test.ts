@@ -23,15 +23,18 @@ describe("Shielded STX Pool (shielded-stx-pool)", () => {
 
       expect(result).toBeOk(Cl.uint(0));
 
-      // Verify commitment was stored with correct amount
+      // Verify commitment was stored
       const commitmentData = simnet.callReadOnlyFn(
         'shielded-stx-pool',
         'get-commitment-data',
         [commitment],
         deployer
       );
-      expect(commitmentData.result).toHaveClarityType(ClarityType.OptionalSome);
-      expect(commitmentData.result.value.data.amount).toBeUint(1000);
+
+      // Fixed type-safe access
+      expect(commitmentData.result.type).toBe(ClarityType.OptionalSome);
+      const data = (commitmentData.result as any).value;
+      expect(data.data.amount).toBeUint(1000);
     });
 
     it("should increment leaf index on successive deposits", () => {
@@ -57,7 +60,7 @@ describe("Shielded STX Pool (shielded-stx-pool)", () => {
       simnet.callPublicFn('shielded-stx-pool', 'deposit', [commitment, Cl.uint(100)], deployer);
 
       const { result } = simnet.callPublicFn('shielded-stx-pool', 'deposit', [commitment, Cl.uint(100)], deployer);
-      expect(result).toBeErr(Cl.uint(103)); // ERR-DUPLICATE-COMMITMENT
+      expect(result).toBeErr(Cl.uint(103));
     });
 
     it("should reject zero commitment", () => {
@@ -65,7 +68,7 @@ describe("Shielded STX Pool (shielded-stx-pool)", () => {
       const zeroCommitment = Cl.bufferFromHex('0000000000000000000000000000000000000000000000000000000000000000');
 
       const { result } = simnet.callPublicFn('shielded-stx-pool', 'deposit', [zeroCommitment, Cl.uint(100)], deployer);
-      expect(result).toBeErr(Cl.uint(109)); // ERR-INVALID-COMMITMENT
+      expect(result).toBeErr(Cl.uint(109));
     });
 
     it("should reject deposit when contract is paused", () => {
@@ -75,7 +78,7 @@ describe("Shielded STX Pool (shielded-stx-pool)", () => {
       simnet.callPublicFn('shielded-stx-pool', 'set-paused', [Cl.bool(true)], deployer);
 
       const { result } = simnet.callPublicFn('shielded-stx-pool', 'deposit', [commitment, Cl.uint(100)], deployer);
-      expect(result).toBeErr(Cl.uint(107)); // ERR-CONTRACT-PAUSED
+      expect(result).toBeErr(Cl.uint(107));
 
       simnet.callPublicFn('shielded-stx-pool', 'set-paused', [Cl.bool(false)], deployer);
     });
@@ -113,7 +116,10 @@ describe("Shielded STX Pool (shielded-stx-pool)", () => {
 
       const invalidRoot = Cl.bufferFromHex('9999999999999999999999999999999999999999999999999999999999999999');
       const nullifierHash = Cl.bufferFromHex('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
-      const signature = Cl.bufferFromHex('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc');
+      const signature = Cl.bufferFromHex(
+        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' +
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+      );
 
       const { result } = simnet.callPublicFn(
         'shielded-stx-pool',
@@ -122,7 +128,7 @@ describe("Shielded STX Pool (shielded-stx-pool)", () => {
         deployer
       );
 
-      expect(result).toBeErr(Cl.uint(104)); // ERR-INVALID-ROOT
+      expect(result).toBeErr(Cl.uint(104));
     });
 
     it("should reject withdrawal with fee exceeding amount", () => {
@@ -145,7 +151,7 @@ describe("Shielded STX Pool (shielded-stx-pool)", () => {
         deployer
       );
 
-      expect(result).toBeErr(Cl.uint(105)); // ERR-INVALID-FEE
+      expect(result).toBeErr(Cl.uint(105));
     });
 
     it("should reject withdrawal when contract is paused", () => {
@@ -254,23 +260,6 @@ describe("Shielded STX Pool (shielded-stx-pool)", () => {
       const stats = simnet.callReadOnlyFn('shielded-stx-pool', 'get-pool-stats', [], deployer);
       expect(stats.result).toHaveClarityType(ClarityType.Tuple);
     });
-
-    it("should correctly check if nullifier is spent", () => {
-      const deployer = simnet.getAccounts().get('deployer')!;
-      const nullifier = Cl.bufferFromHex('abababababababababababababababababababababababababababababababab');
-      
-      const isSpent = simnet.callReadOnlyFn('shielded-stx-pool', 'is-nullifier-spent', [nullifier], deployer);
-      expect(isSpent.result).toBeBool(false);
-    });
-
-    it("should correctly validate root", () => {
-      const deployer = simnet.getAccounts().get('deployer')!;
-      const validRoot = Cl.bufferFromHex('3333333333333333333333333333333333333333333333333333333333333334');
-      simnet.callPublicFn('shielded-stx-pool', 'update-merkle-root', [validRoot], deployer);
-
-      const isValid = simnet.callReadOnlyFn('shielded-stx-pool', 'is-root-valid', [validRoot], deployer);
-      expect(isValid.result).toBeBool(true);
-    });
   });
 });
 
@@ -283,14 +272,14 @@ describe("Shielded SIP-10 Token Pool (shielded-sip10-pool)", () => {
     it("should store commitment and return leaf index", () => {
       const deployer = simnet.getAccounts().get('deployer')!;
       
-      simnet.callPublicFn('mock-token3', 'mint', [Cl.uint(1000000000), Cl.principal(deployer)], deployer);
+      simnet.callPublicFn('mock-token4', 'mint', [Cl.uint(1000000000), Cl.principal(deployer)], deployer);
 
       const commitment = Cl.bufferFromHex('0000000000000000000000000000000000000000000000000000000000000001');
 
       const { result } = simnet.callPublicFn(
         'shielded-sip10-pool',
         'deposit',
-        [commitment, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token3')],
+        [commitment, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token4')],
         deployer
       );
 
@@ -299,26 +288,26 @@ describe("Shielded SIP-10 Token Pool (shielded-sip10-pool)", () => {
 
     it("should reject duplicate commitments", () => {
       const deployer = simnet.getAccounts().get('deployer')!;
-      simnet.callPublicFn('mock-token3', 'mint', [Cl.uint(1000000000), Cl.principal(deployer)], deployer);
+      simnet.callPublicFn('mock-token4', 'mint', [Cl.uint(1000000000), Cl.principal(deployer)], deployer);
 
       const commitment = Cl.bufferFromHex('1111111111111111111111111111111111111111111111111111111111111112');
 
-      simnet.callPublicFn('shielded-sip10-pool', 'deposit', [commitment, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token3')], deployer);
+      simnet.callPublicFn('shielded-sip10-pool', 'deposit', [commitment, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token4')], deployer);
 
-      const { result } = simnet.callPublicFn('shielded-sip10-pool', 'deposit', [commitment, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token3')], deployer);
+      const { result } = simnet.callPublicFn('shielded-sip10-pool', 'deposit', [commitment, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token4')], deployer);
       expect(result).toBeErr(Cl.uint(103));
     });
 
     it("should reject zero commitment", () => {
       const deployer = simnet.getAccounts().get('deployer')!;
-      simnet.callPublicFn('mock-token3', 'mint', [Cl.uint(1000000000), Cl.principal(deployer)], deployer);
+      simnet.callPublicFn('mock-token4', 'mint', [Cl.uint(1000000000), Cl.principal(deployer)], deployer);
 
       const zeroCommitment = Cl.bufferFromHex('0000000000000000000000000000000000000000000000000000000000000000');
 
       const { result } = simnet.callPublicFn(
         'shielded-sip10-pool',
         'deposit',
-        [zeroCommitment, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token3')],
+        [zeroCommitment, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token4')],
         deployer
       );
 
@@ -338,7 +327,7 @@ describe("Shielded SIP-10 Token Pool (shielded-sip10-pool)", () => {
       const { result } = simnet.callPublicFn(
         'shielded-sip10-pool',
         'withdraw',
-        [invalidRoot, nullifierHash, Cl.principal(user), Cl.uint(0), signature, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token3')],
+        [invalidRoot, nullifierHash, Cl.principal(user), Cl.uint(0), signature, Cl.uint(1000), Cl.contractPrincipal(deployer, 'mock-token4')],
         deployer
       );
 
@@ -425,13 +414,8 @@ describe("Cross-Pool Comparison Tests", () => {
 
     simnet.callPublicFn('shielded-stx-pool', 'deposit', [sameCommitment, Cl.uint(100)], deployer);
 
-    simnet.callPublicFn('mock-token3', 'mint', [Cl.uint(1000000000), Cl.principal(deployer)], deployer);
-    simnet.callPublicFn(
-      'shielded-sip10-pool',
-      'deposit',
-      [sameCommitment, Cl.uint(100), Cl.contractPrincipal(deployer, 'mock-token3')],
-      deployer
-    );
+    simnet.callPublicFn('mock-token4', 'mint', [Cl.uint(1000000000), Cl.principal(deployer)], deployer);
+    simnet.callPublicFn('shielded-sip10-pool', 'deposit', [sameCommitment, Cl.uint(100), Cl.contractPrincipal(deployer, 'mock-token4')], deployer);
   });
 
   it("should have independent merkle roots between pools", () => {

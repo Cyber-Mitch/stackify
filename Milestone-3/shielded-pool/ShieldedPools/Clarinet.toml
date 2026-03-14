@@ -5,18 +5,18 @@ authors = []
 telemetry = true
 cache_dir = './.cache'
 requirements = []
-[contracts.shielded-native-pool]
-path = 'contracts/shielded-native-pool.clar'
+[contracts.shielded-stx-pool]
+path = 'contracts/shielded-stx-pool.clar'
 clarity_version = 4
 epoch = 'latest'
 
-[contracts.shielded-token-pool]
-path = 'contracts/shielded-token-pool.clar'
+[contracts.shielded-sip10-pool]
+path = 'contracts/shielded-sip10-pool.clar'
 clarity_version = 4
 epoch = 'latest'
 
-[contracts.mock-token3]
-path = 'contracts/mock-token3.clar'
+[contracts.mock-token4]
+path = 'contracts/mock-token4.clar'
 clarity_version = 4
 epoch = 'latest'
 

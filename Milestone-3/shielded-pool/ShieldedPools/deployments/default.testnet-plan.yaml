@@ -9,24 +9,24 @@ plan:
     - id: 0
       transactions:
         - contract-publish:
-            contract-name: mock-token3
+            contract-name: mock-token4
             expected-sender: ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N
             cost: 11950
-            path: contracts/mock-token3.clar
+            path: contracts/mock-token4.clar
             anchor-block-only: true
             clarity-version: 4
         - contract-publish:
-            contract-name: shielded-native-pool
-            expected-sender: ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N
-            cost: 258400
-            path: contracts/shielded-native-pool.clar
-            anchor-block-only: true
-            clarity-version: 4
-        - contract-publish:
-            contract-name: shielded-token-pool
+            contract-name: shielded-sip10-pool
             expected-sender: ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N
             cost: 177660
-            path: contracts/shielded-token-pool.clar
+            path: contracts/shielded-sip10-pool.clar
+            anchor-block-only: true
+            clarity-version: 4
+        - contract-publish:
+            contract-name: shielded-stx-pool
+            expected-sender: ST2RSFWY4AJTJXK4ECCDRYY96CWAM2DXMNME6RB9N
+            cost: 258400
+            path: contracts/shielded-stx-pool.clar
             anchor-block-only: true
             clarity-version: 4
       epoch: "3.3"

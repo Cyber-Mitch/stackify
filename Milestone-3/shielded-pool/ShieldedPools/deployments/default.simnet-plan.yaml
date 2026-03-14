@@ -64,18 +64,18 @@ plan:
     - id: 0
       transactions:
         - emulated-contract-publish:
-            contract-name: mock-token
+            contract-name: mock-token4
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            path: contracts/mock-token.clar
+            path: contracts/mock-token3.clar
             clarity-version: 4
         - emulated-contract-publish:
-            contract-name: shielded-native-pool
+            contract-name: shielded-sip10-pool
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            path: contracts/shielded-native-pool.clar
+            path: contracts/shielded-sip10-pool.clar
             clarity-version: 4
         - emulated-contract-publish:
-            contract-name: shielded-token-pool
+            contract-name: shielded-stx-pool
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            path: contracts/shielded-token-pool.clar
+            path: contracts/shielded-stx-pool.clar
             clarity-version: 4
       epoch: "3.3"
